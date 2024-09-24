@@ -1,0 +1,4 @@
+class NotificationListener:
+    def on_notification_posted(self, notification):
+        print(f"Notificação recebida: {notification}")
+        # Lógica para lidar com notificações
