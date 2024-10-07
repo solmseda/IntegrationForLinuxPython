@@ -1,14 +1,14 @@
 from bluetooth_connection_manager import BluetoothConnectionManager
 
 class BluetoothClient:
-    def __init__(self):
-        self.connection_manager = BluetoothConnectionManager()
+    def __init__(self, connection_manager: BluetoothConnectionManager):
+        self.connection_manager = connection_manager
 
-    def connect(self, address):
-        self.connection_manager.start_client(address)
+    async def connect(self, device):
+        await self.connection_manager.connect(device)
 
-    def send_notification(self, notification_data):
-        self.connection_manager.send_message(notification_data.content)
+    async def send_notification_data(self, notification_data: str):
+        await self.connection_manager.send_message(notification_data)
 
-    def receive_clipboard_data(self):
-        return self.connection_manager.receive_data()
+    async def receive_clipboard_data(self):
+        return await self.connection_manager.receive_clipboard_data()

@@ -1,54 +1,69 @@
+import asyncio
 import tkinter as tk
 from tkinter import messagebox
+from bleak import BleakScanner
 from bluetooth_connection_manager import BluetoothConnectionManager
+from uuid import UUID
 
-class BluetoothApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Gerenciador Bluetooth")
-        self.root.geometry("400x300")
+class BluetoothGUI(tk.Tk):
+    def __init__(self, connection_manager):
+        super().__init__()
+        self.title("Bluetooth Scanner")
+        self.geometry("400x300")
 
-        # Instanciando o gerenciador de conexões Bluetooth
-        self.manager = BluetoothConnectionManager()
-        
-        # Lista de dispositivos encontrados
-        self.device_list = tk.Listbox(self.root, width=50, height=10)
-        self.device_list.pack(pady=20)
+        # Label de Status
+        self.status_label = tk.Label(self, text="Scanning for devices...", font=("Helvetica", 12))
+        self.status_label.pack(pady=10)
 
-        # Botão para buscar dispositivos
-        self.search_button = tk.Button(self.root, text="Buscar Dispositivos", command=self.search_devices)
-        self.search_button.pack(pady=10)
+        # Lista para mostrar os dispositivos encontrados
+        self.device_listbox = tk.Listbox(self, width=50, height=10)
+        self.device_listbox.pack(pady=10)
 
         # Botão para conectar ao dispositivo selecionado
-        self.connect_button = tk.Button(self.root, text="Conectar ao Dispositivo", command=self.connect_device)
+        self.connect_button = tk.Button(self, text="Connect", command=self.connect_to_device)
         self.connect_button.pack(pady=10)
 
-    # Função para buscar dispositivos e atualizar a lista
-    def search_devices(self):
-        self.device_list.delete(0, tk.END)  # Limpa a lista
-        devices = self.manager.discover_devices()  # Busca dispositivos
-        if devices:
-            for addr, name in devices:
-                self.device_list.insert(tk.END, f"{name} - {addr}")
-        else:
-            messagebox.showinfo("Busca Bluetooth", "Nenhum dispositivo encontrado.")
+        # Gerenciador de conexão Bluetooth
+        self.connection_manager = connection_manager
 
-    # Função para conectar ao dispositivo selecionado
-    def connect_device(self):
-        selected_device = self.device_list.curselection()  # Obtém a seleção
-        if selected_device:
-            device_info = self.device_list.get(selected_device)
-            device_address = device_info.split(" - ")[1]  # Extrai o endereço Bluetooth
-            try:
-                self.manager.connect_to_device(device_address)  # Conecta ao dispositivo
-                messagebox.showinfo("Conexão", f"Conectado ao dispositivo {device_info}")
-            except Exception as e:
-                messagebox.showerror("Erro de Conexão", f"Erro ao conectar: {str(e)}")
-        else:
-            messagebox.showwarning("Seleção de Dispositivo", "Por favor, selecione um dispositivo.")
+        # Inicia o scan de dispositivos Bluetooth ao abrir
+        self.after(100, self.start_scan)
 
-# Rodar a interface gráfica
+    def start_scan(self):
+        # Inicia o scan em um loop de eventos Tkinter
+        asyncio.run(self.scan_devices())
+
+    async def scan_devices(self):
+        # Realiza o scan de dispositivos Bluetooth e exibe na interface
+        self.status_label.config(text="Scanning...")
+        devices = await self.connection_manager.scan_devices()
+
+        if not devices:
+            self.status_label.config(text="No devices found.")
+        else:
+            self.status_label.config(text="Select a device to connect.")
+            self.device_listbox.delete(0, tk.END)  # Limpa a lista
+            for idx, device in enumerate(devices):
+                self.device_listbox.insert(tk.END, f"{idx}: {device.name} - {device.address}")
+
+    def connect_to_device(self):
+        # Tenta conectar ao dispositivo selecionado na lista
+        selected_idx = self.device_listbox.curselection()
+        if selected_idx:
+            device_index = int(self.device_listbox.get(selected_idx).split(":")[0])
+            asyncio.run(self.connection_manager.select_device_and_connect(device_index))
+        else:
+            messagebox.showwarning("Selection Error", "Please select a device from the list.")
+
+# Função principal para executar a GUI
+def run_gui():
+    # Definir o UUID para o serviço Bluetooth (substitua pelo correto)
+    service_uuid = UUID("12345678-1234-5678-1234-56789abcdef0")
+    connection_manager = BluetoothConnectionManager(service_uuid)
+
+    # Inicializa a interface gráfica
+    app = BluetoothGUI(connection_manager)
+    app.mainloop()
+
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = BluetoothApp(root)
-    root.mainloop()
+    run_gui()

@@ -1,8 +1,10 @@
 from bluetooth_connection_manager import BluetoothConnectionManager
 
 class BluetoothServer:
-    def __init__(self):
-        self.connection_manager = BluetoothConnectionManager()
+    def __init__(self, connection_manager: BluetoothConnectionManager):
+        self.connection_manager = connection_manager
 
-    def start(self):
-        self.connection_manager.start_server()
+    async def start(self):
+        # Inicia o servidor Bluetooth
+        await self.connection_manager.start_server()
+        print("Servidor Bluetooth em funcionamento.")
