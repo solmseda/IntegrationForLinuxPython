@@ -1,71 +1,118 @@
-import asyncio
-from bleak import BleakScanner, BleakClient
-from uuid import UUID
-from Notification_Data import NotificationData
+import bluetooth
+from plyer import notification
 from Clipboard_Data import ClipboardData
 
 class BluetoothConnectionManager:
-    def __init__(self, uuid: UUID):
+    def __init__(self, uuid):
         self.bluetooth_adapter = None  # Placeholder para o adaptador Bluetooth
         self.bluetooth_socket = None   # Placeholder para o socket Bluetooth
         self.input_stream = None       # Placeholder para input stream
         self.output_stream = None      # Placeholder para output stream
-        self.uuid = uuid               # UUID do serviço Bluetooth
+        self.uuid = str(uuid)          # UUID do serviço Bluetooth
         self.device = None             # Placeholder para o dispositivo conectado
         self.devices = []              # Lista de dispositivos encontrados durante o scan
 
-    async def start_server(self):
-        # Método para iniciar o servidor Bluetooth (a ser implementado)
+    def start_server(self):
+        # Placeholder para o servidor Bluetooth
         pass
 
-    async def authenticate(self):
-        # Placeholder para lógica de autenticação Bluetooth
+    def authenticate(self):
+        # Placeholder para lógica de autenticação
         pass
 
-    async def start_client(self, device):
-        # Método para conectar ao dispositivo Bluetooth
-        self.device = BleakClient(device.address)
-        await self.device.connect()
-        print(f"Conectado ao dispositivo: {device.name} ({device.address})")
+    def start_client(self, device):
+        try:
+            print(f"Tentando conectar ao dispositivo {device}...")
+            service_matches = bluetooth.find_service(uuid=self.uuid, address=device)
+            
+            if len(service_matches) == 0:
+                print("Nenhum serviço encontrado no dispositivo especificado.")
+                return False
 
-    async def receive_notification(self, notification_data: NotificationData):
-        # Recebe dados de notificação de uma característica específica via GATT
-        data = await self.device.read_gatt_char(self.uuid)
-        notification_data.content = data.decode()  # Atualiza o conteúdo da notificação
-        print(f"Notificação recebida: {notification_data.content}")
+            first_match = service_matches[0]
+            port = first_match["port"]
+            name = first_match["name"]
+            host = first_match["host"]
 
-    async def receive_clipboard_data(self):
-        # Recebe dados da área de transferência de uma característica específica via GATT
-        data = await self.device.read_gatt_char(self.uuid)
-        return ClipboardData(content=data.decode())
+            print(f"Conectando ao host {host} na porta {port}")
+            self.bluetooth_socket = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
+            self.bluetooth_socket.connect((host, port))
+            self.input_stream = self.bluetooth_socket.makefile('rb')
+            self.output_stream = self.bluetooth_socket.makefile('wb')
 
-    async def send_message(self, message: str):
-        # Envia uma mensagem de volta ao dispositivo via GATT
-        await self.device.write_gatt_char(self.uuid, message.encode())
-        print(f"Mensagem enviada: {message}")
+            print(f"Conectado ao serviço \"{name}\" no dispositivo ({device})")
+            return True
+        except bluetooth.BluetoothError as e:
+            print(f"Erro ao conectar: {e}")
+            return False
 
-    async def send_clipboard(self, clipboard_data: ClipboardData):
-        # Envia dados da área de transferência ao dispositivo Android via GATT
-        await self.device.write_gatt_char(self.uuid, clipboard_data.content.encode())
-        print(f"Dados da área de transferência enviados: {clipboard_data.content}")
 
-    async def close_connection(self):
-        # Fecha a conexão Bluetooth
-        await self.device.disconnect()
-        print("Conexão Bluetooth encerrada.")
+    def receive_notification(self, notification_data):
+        try:
+            data = self.input_stream.read(1024)
+            notification_data.content = data.decode("utf-8")
+            print(f"Notificação recebida: {notification_data.content}")
 
-    # Método adicionado para realizar o scan de dispositivos Bluetooth
-    async def scan_devices(self):
+            self.show_system_notification(notification_data)
+            
+        except Exception as e:
+            print(f"Erro ao receber notificação: {e}")
+
+    def show_system_notification(self, notification_data):
+        notification.notify(
+            title=f"Notificação de {notification_data.app_name}",
+            message=notification_data.content,
+            app_name=notification_data.app_name,
+            timeout=10,
+        )
+    
+    def receive_clipboard_data(self):
+        try:
+            data = self.input_stream.read(1024)
+            clipboard_data = ClipboardData(content=data.decode("utf-8"))
+            print(f"Dados da área de transferência recebidos: {clipboard_data.content}")
+            return clipboard_data
+        except Exception as e:
+            print(f"Erro ao receber dados da área de transferência: {e}")
+            return None
+
+    def send_message(self, message):
+        try:
+            self.output_stream.write(message.encode("utf-8"))
+            self.output_stream.flush()
+            print(f"Mensagem enviada: {message}")
+        except Exception as e:
+            print(f"Erro ao enviar mensagem: {e}")
+
+    def send_clipboard(self, clipboard_data):
+        try:
+            self.output_stream.write(clipboard_data.content.encode("utf-8"))
+            self.output_stream.flush()
+            print(f"Dados da área de transferência enviados: {clipboard_data.content}")
+        except Exception as e:
+            print(f"Erro ao enviar dados da área de transferência: {e}")
+
+    def close_connection(self):
+        try:
+            if self.input_stream:
+                self.input_stream.close()
+            if self.output_stream:
+                self.output_stream.close()
+            if self.bluetooth_socket:
+                self.bluetooth_socket.close()
+            print("Conexão Bluetooth encerrada.")
+        except Exception as e:
+            print(f"Erro ao fechar conexão: {e}")
+
+    def scan_devices(self):
         print("Iniciando o scan de dispositivos Bluetooth...")
-        # Realiza o scan de dispositivos BLE disponíveis
-        self.devices = await BleakScanner.discover()
+        self.devices = bluetooth.discover_devices(lookup_names=True)
 
-        # Exibe os dispositivos encontrados
         if not self.devices:
             print("Nenhum dispositivo encontrado.")
         else:
             print("Dispositivos encontrados:")
-            for idx, device in enumerate(self.devices):
-                print(f"{idx}: {device.name} - {device.address}")
+            for idx, (address, name) in enumerate(self.devices):
+                print(f"{idx}: {name or 'Desconhecido'} ({address})")
 
         return self.devices
