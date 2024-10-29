@@ -1,3 +1,4 @@
+import subprocess
 import bluetooth
 from plyer import notification
 from Clipboard_Data import ClipboardData
@@ -116,3 +117,21 @@ class BluetoothConnectionManager:
                 print(f"{idx}: {name or 'Desconhecido'} ({address})")
 
         return self.devices
+    
+    def list_paired_devices(self):
+        """Retorna uma lista de dispositivos pareados com endereço e nome."""
+        paired_devices = []
+        
+        try:
+            # Executa o comando para listar dispositivos pareados
+            output = subprocess.check_output(["bluetoothctl", "paired-devices"]).decode("utf-8")
+            for line in output.splitlines():
+                parts = line.split(" ", 2)
+                if len(parts) >= 3:
+                    address = parts[1]
+                    name = parts[2]
+                    paired_devices.append((address, name))
+        except subprocess.CalledProcessError as e:
+            print(f"Erro ao obter dispositivos pareados: {e}")
+        
+        return paired_devices
