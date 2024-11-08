@@ -4,14 +4,20 @@ from plyer import notification
 from Clipboard_Data import ClipboardData
 
 class BluetoothConnectionManager:
-    def __init__(self, uuid):
-        self.bluetooth_adapter = None  # Placeholder para o adaptador Bluetooth
-        self.bluetooth_socket = None   # Placeholder para o socket Bluetooth
-        self.input_stream = None       # Placeholder para input stream
-        self.output_stream = None      # Placeholder para output stream
-        self.uuid = str(uuid)          # UUID do serviço Bluetooth
-        self.device = None             # Placeholder para o dispositivo conectado
-        self.devices = []              # Lista de dispositivos encontrados durante o scan
+    def __init__(self, uuid, status_callback=None):
+        self.bluetooth_adapter = None
+        self.bluetooth_socket = None
+        self.input_stream = None
+        self.output_stream = None
+        self.uuid = str(uuid)
+        self.device = None
+        self.devices = []
+        self.status_callback = status_callback  # Callback para atualizar o status na GUI
+
+    def update_status(self, message):
+        """Chama o callback para atualizar o status na GUI, se disponível."""
+        if self.status_callback:
+            self.status_callback(message)
 
     def start_server(self):
         # Placeholder para o servidor Bluetooth
@@ -21,31 +27,37 @@ class BluetoothConnectionManager:
         # Placeholder para lógica de autenticação
         pass
 
-    def start_client(self, device):
+    def start_client(self, device_address):
+        if not self.pair_device(device_address):
+            self.update_status("Pareamento falhou. Não foi possível conectar.")
+            return False
+
         try:
-            print(f"Tentando conectar ao dispositivo {device}...")
-            service_matches = bluetooth.find_service(uuid=self.uuid, address=device)
+            print(f"Tentando conectar ao dispositivo {device_address} com UUID {self.uuid}...")
+            self.update_status(f"Conectando ao dispositivo {device_address}...")
+            
+            service_matches = bluetooth.find_service(uuid=self.uuid, address=device_address)
             
             if len(service_matches) == 0:
                 print("Nenhum serviço encontrado no dispositivo especificado.")
+                self.update_status("Nenhum serviço encontrado no dispositivo.")
                 return False
 
             first_match = service_matches[0]
             port = first_match["port"]
-            name = first_match["name"]
             host = first_match["host"]
 
             print(f"Conectando ao host {host} na porta {port}")
             self.bluetooth_socket = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
             self.bluetooth_socket.connect((host, port))
-            self.input_stream = self.bluetooth_socket.makefile('rb')
-            self.output_stream = self.bluetooth_socket.makefile('wb')
-
-            print(f"Conectado ao serviço \"{name}\" no dispositivo ({device})")
+            print(f"Conectado ao dispositivo {device_address}")
+            self.update_status(f"Conectado ao dispositivo {device_address} com sucesso.")
             return True
         except bluetooth.BluetoothError as e:
             print(f"Erro ao conectar: {e}")
+            self.update_status("Erro ao conectar.")
             return False
+
 
 
     def receive_notification(self, notification_data):
@@ -135,3 +147,24 @@ class BluetoothConnectionManager:
             print(f"Erro ao obter dispositivos pareados: {e}")
         
         return paired_devices
+    
+    def pair_device(self, device_address):
+        try:
+            paired_devices = self.list_paired_devices()
+            if any(device[0] == device_address for device in paired_devices):
+                print(f"Dispositivo {device_address} já está pareado.")
+                self.update_status(f"Dispositivo {device_address} já está pareado.")
+                return True
+
+            print(f"Tentando parear com o dispositivo {device_address}...")
+            self.update_status(f"Iniciando pareamento com {device_address}...")
+            subprocess.run(["bluetoothctl", "pair", device_address], check=True)
+            subprocess.run(["bluetoothctl", "trust", device_address], check=True)
+            print(f"Dispositivo {device_address} pareado com sucesso.")
+            self.update_status(f"Pareamento com {device_address} realizado com sucesso.")
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"Erro ao parear com o dispositivo {device_address}: {e}")
+            self.update_status(f"Erro ao parear com {device_address}.")
+            return False
+

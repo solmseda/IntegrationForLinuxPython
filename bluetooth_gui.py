@@ -25,29 +25,38 @@ class BluetoothGUI(tk.Tk):
         self.connect_button = tk.Button(self, text="Connect", command=self.connect_to_device)
         self.connect_button.pack(pady=10)
 
-        # Nova seção: Lista de dispositivos pareados
+        # Seção para dispositivos pareados
         self.paired_label = tk.Label(self, text="Dispositivos Pareados", font=("Helvetica", 12))
         self.paired_label.pack(pady=10)
-        
+
         self.paired_listbox = tk.Listbox(self, width=50, height=10)
         self.paired_listbox.pack(pady=10)
 
-        # Inicializa o gerenciador de conexão Bluetooth
-        self.connection_manager = connection_manager
+        # Inicializa o gerenciador de conexão Bluetooth com o callback de atualização de status
+        self.connection_manager = BluetoothConnectionManager(
+            uuid=UUID("f81d4fae-7dec-11d0-a765-00a0c91e6bf6"),
+            status_callback=self.update_status
+        )
 
         # Mostrar dispositivos pareados ao iniciar a aplicação
         self.show_paired_devices()
 
     def start_scan(self):
         """Realiza uma varredura para encontrar dispositivos Bluetooth próximos."""
-        self.status_label.config(text="Escaneando por dispositivos...")
+        # Limpa a lista de dispositivos descobertos antes de iniciar o novo escaneamento
+        self.device_listbox.delete(0, tk.END)
+        
+        # Atualiza o status para indicar que o escaneamento está em andamento
+        self.update_status("Escaneando por dispositivos...")
+        
+        # Executa o escaneamento de dispositivos Bluetooth
         devices = self.connection_manager.scan_devices()
 
+        # Atualiza o status e preenche a lista com os dispositivos descobertos
         if not devices:
-            self.status_label.config(text="Nenhum dispositivo encontrado.")
+            self.update_status("Nenhum dispositivo encontrado.")
         else:
-            self.status_label.config(text="Selecione um dispositivo para conectar.")
-            self.device_listbox.delete(0, tk.END)
+            self.update_status("Selecione um dispositivo para conectar.")
             for idx, (address, name) in enumerate(devices):
                 self.device_listbox.insert(tk.END, f"{idx}: {name or 'Unknown'} ({address})")
 
@@ -72,6 +81,11 @@ class BluetoothGUI(tk.Tk):
                 messagebox.showerror("Connection Error", "Não foi possível conectar ao dispositivo.")
         else:
             messagebox.showwarning("Selection Error", "Selecione um dispositivo da lista para conectar.")
+
+    def update_status(self, message):
+        """Atualiza a label de status com uma nova mensagem."""
+        self.status_label.config(text=message)
+
 
 def run_gui():
     service_uuid = UUID("f81d4fae-7dec-11d0-a765-00a0c91e6bf6")
