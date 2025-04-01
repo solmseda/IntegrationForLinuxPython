@@ -2,15 +2,17 @@ import tkinter as tk
 from tkinter import messagebox
 from bluetooth_connection_manager import BluetoothConnectionManager
 from uuid import UUID
+import threading
+import time
 
 class BluetoothGUI(tk.Tk):
     def __init__(self, connection_manager):
         super().__init__()
-        self.title("Bluetooth Scanner")
+        self.title("Integration4Linux")
         self.geometry("800x600")
 
         # Status label
-        self.status_label = tk.Label(self, text="Bem-vindo ao Scanner Bluetooth", font=("Helvetica", 12))
+        self.status_label = tk.Label(self, text="Bem-vindo ao Integration4Linux", font=("Helvetica", 12))
         self.status_label.pack(pady=10)
 
         # Botão de escaneamento
@@ -38,8 +40,11 @@ class BluetoothGUI(tk.Tk):
             status_callback=self.update_status
         )
 
-        # Mostrar dispositivos pareados ao iniciar a aplicação
+        # Mostra dispositivos pareados ao iniciar a aplicação
         self.show_paired_devices()
+
+        # Tenta conectar automaticamente a dispositivos pareados
+        self.auto_connect_to_paired_devices()
 
     def start_scan(self):
         """Realiza uma varredura para encontrar dispositivos Bluetooth próximos."""
@@ -85,6 +90,27 @@ class BluetoothGUI(tk.Tk):
     def update_status(self, message):
         """Atualiza a label de status com uma nova mensagem."""
         self.status_label.config(text=message)
+
+
+    def auto_connect_to_paired_devices(self):
+        """Tenta conectar automaticamente a dispositivos pareados, repetidamente se necessário."""
+        def connect_loop():
+            while True:
+                paired_devices = self.connection_manager.list_paired_devices()
+                if paired_devices:
+                    for address, name in paired_devices:
+                        self.update_status(f"Tentando conectar ao dispositivo pareado: {name} ({address})")
+                        if self.connection_manager.start_client(address):
+                            self.update_status(f"Conectado automaticamente ao dispositivo: {name} ({address})")
+                            return  # Para a tentativa contínua ao conectar
+                else:
+                    self.update_status("Nenhum dispositivo pareado encontrado.")
+                
+                self.update_status("Tentativa de reconexão em 10 segundos...")
+                time.sleep(10)  # Intervalo de espera antes da próxima tentativa
+
+        # Executa o loop de reconexão em uma thread separada para não bloquear a GUI
+        threading.Thread(target=connect_loop, daemon=True).start()
 
 
 def run_gui():
