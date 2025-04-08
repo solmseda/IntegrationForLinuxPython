@@ -1,5 +1,8 @@
 import subprocess
+import threading
+import time
 import bluetooth
+import json
 from plyer import notification
 from Clipboard_Data import ClipboardData
 
@@ -60,6 +63,10 @@ class BluetoothConnectionManager:
             self.bluetooth_socket.connect((host, port))
             print(f"Conectado ao dispositivo {device_address}")
             self.update_status(f"Conectado ao dispositivo {device_address} com sucesso.")
+            
+            # Inicia o listener para receber dados
+            threading.Thread(target=self.listen_for_messages, daemon=True).start()
+
             return True
 
         except bluetooth.BluetoothError as e:
@@ -179,3 +186,57 @@ class BluetoothConnectionManager:
             self.update_status(f"Erro ao parear com {device_address}.")
             return False
 
+    def auto_connect_to_paired_devices(self):
+        def connect_loop():
+            while True:
+                paired_devices = self.list_paired_devices()
+
+                for address, name in paired_devices:
+                    self.update_status(f"Verificando serviço no dispositivo: {name} ({address})")
+                    
+                    service_matches = bluetooth.find_service(uuid=str(self.uuid), address=address)
+
+                    if service_matches:
+                        self.update_status(f"Dispositivo compatível encontrado: {name} ({address})")
+                        if self.start_client(address):
+                            self.update_status(f"Conectado automaticamente ao dispositivo: {name} ({address})")
+                            return  # Parar após conectar
+                    else:
+                        print(f"{name} não possui o serviço com UUID esperado.")
+
+                self.update_status("Nenhum dispositivo com serviço compatível encontrado. Tentando novamente em 10s...")
+                time.sleep(10)
+
+        threading.Thread(target=connect_loop, daemon=True).start()
+
+
+    def listen_for_messages(self):
+        try:
+            while True:
+                data = self.bluetooth_socket.recv(1024)
+                if data:
+                    mensagem = data.decode("utf-8")
+                    print("Mensagem recebida:", mensagem)
+
+                    # Tenta interpretar como JSON (esperado de NotificationData)
+                    try:
+                        json_data = json.loads(mensagem)
+                        app = json_data.get("appName", "Aplicativo Android")
+                        content = json_data.get("content", "Notificação sem conteúdo")
+
+                        notification.notify(
+                            title=f"Notificação de {app}",
+                            message=content,
+                            app_name="Integration4Linux",
+                            timeout=10
+                        )
+
+                    except json.JSONDecodeError:
+                        print("Mensagem recebida não é JSON válido:", mensagem)
+
+                else:
+                    print("Conexão encerrada pelo dispositivo remoto.")
+                    break
+        except Exception as e:
+            print("Erro ao escutar mensagens:", e)
+            self.update_status("Erro na conexão.")
