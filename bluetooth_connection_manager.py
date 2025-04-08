@@ -28,35 +28,46 @@ class BluetoothConnectionManager:
         pass
 
     def start_client(self, device_address):
-        if not self.pair_device(device_address):
-            self.update_status("Pareamento falhou. Não foi possível conectar.")
-            return False
+        # Verifica se o dispositivo já está pareado
+        already_paired = any(device[0] == device_address for device in self.list_paired_devices())
+
+        if not already_paired:
+            if not self.pair_device(device_address):
+                self.update_status("Pareamento falhou. Não foi possível conectar.")
+                return False
+        else:
+            print(f"Dispositivo {device_address} já está pareado. Pulando etapa de pareamento.")
 
         try:
             print(f"Tentando conectar ao dispositivo {device_address} com UUID {self.uuid}...")
             self.update_status(f"Conectando ao dispositivo {device_address}...")
-            
+
+            # Primeira tentativa: buscar serviço via SDP
             service_matches = bluetooth.find_service(uuid=self.uuid, address=device_address)
-            
-            if len(service_matches) == 0:
-                print("Nenhum serviço encontrado no dispositivo especificado.")
-                self.update_status("Nenhum serviço encontrado no dispositivo.")
-                return False
 
-            first_match = service_matches[0]
-            port = first_match["port"]
-            host = first_match["host"]
+            if service_matches:
+                first_match = service_matches[0]
+                port = first_match["port"]
+                host = first_match["host"]
+                print(f"Serviço encontrado! Conectando ao host {host} na porta {port}")
+            else:
+                # Fallback: conecta diretamente
+                print("Nenhum serviço encontrado via SDP. Tentando conexão direta na porta 1.")
+                port = 1
+                host = device_address
 
-            print(f"Conectando ao host {host} na porta {port}")
             self.bluetooth_socket = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
             self.bluetooth_socket.connect((host, port))
             print(f"Conectado ao dispositivo {device_address}")
             self.update_status(f"Conectado ao dispositivo {device_address} com sucesso.")
             return True
+
         except bluetooth.BluetoothError as e:
             print(f"Erro ao conectar: {e}")
             self.update_status("Erro ao conectar.")
             return False
+
+
 
 
 
