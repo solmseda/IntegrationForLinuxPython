@@ -3,6 +3,9 @@ import threading
 import time
 import bluetooth
 import json
+import base64
+import tempfile
+import os
 from plyer import notification
 from Clipboard_Data import ClipboardData
 
@@ -73,10 +76,6 @@ class BluetoothConnectionManager:
             print(f"Erro ao conectar: {e}")
             self.update_status("Erro ao conectar.")
             return False
-
-
-
-
 
     def receive_notification(self, notification_data):
         try:
@@ -211,32 +210,80 @@ class BluetoothConnectionManager:
 
 
     def listen_for_messages(self):
-        try:
-            while True:
-                data = self.bluetooth_socket.recv(1024)
-                if data:
-                    mensagem = data.decode("utf-8")
-                    print("Mensagem recebida:", mensagem)
+        buffer = b""
+        while True:
+            try:
+                chunk = self.bluetooth_socket.recv(1024)
+            except Exception as e:
+                print(f"Erro no recv: {e}")
+                self.update_status("Erro na conexão.")
+                return
 
-                    # Tenta interpretar como JSON (esperado de NotificationData)
-                    try:
-                        json_data = json.loads(mensagem)
-                        app = json_data.get("appName", "Aplicativo Android")
-                        content = json_data.get("content", "Notificação sem conteúdo")
+            if not chunk:
+                # conexão foi fechada pelo outro lado
+                print("Conexão fechada pelo dispositivo Android.")
+                self.update_status("Dispositivo desconectado.")
+                return
 
-                        notification.notify(
-                            title=f"Notificação de {app}",
-                            message=content,
-                            app_name="Integration4Linux",
-                            timeout=10
-                        )
+            # Acumula o pedaço recebido no buffer
+            buffer += chunk
 
-                    except json.JSONDecodeError:
-                        print("Mensagem recebida não é JSON válido:", mensagem)
+            # Tenta decodificar o buffer inteiro como JSON.
+            try:
+                texto_completo = buffer.decode("utf-8")
+                mensagem_json = json.loads(texto_completo)
+            except json.JSONDecodeError:
+                # JSON ainda incompleto; aguardamos mais bytes
+                continue
 
-                else:
-                    print("Conexão encerrada pelo dispositivo remoto.")
-                    break
-        except Exception as e:
-            print("Erro ao escutar mensagens:", e)
-            self.update_status("Erro na conexão.")
+            # Se chegou aqui, 'mensagem_json' é um dicionário Python válido.
+
+            # Evita duplicação (se existir "notificationId")
+            notif_id = mensagem_json.get("notificationId")
+            if notif_id and (notif_id in self.received_ids):
+                buffer = b""  # limpa buffer para próxima mensagem
+                continue
+            if notif_id:
+                self.received_ids.add(notif_id)
+
+            # Extrai campos
+            app = mensagem_json.get("appName", "Aplicativo Android")
+            content = mensagem_json.get("content", "")
+            icon_b64 = mensagem_json.get("iconBase64")
+
+            # Se houver iconBase64, grava num arquivo temporário
+            icon_path = None
+            if icon_b64:
+                try:
+                    png_bytes = base64.b64decode(icon_b64)
+                    fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="android_icon_")
+                    os.write(fd, png_bytes)
+                    os.close(fd)
+                    icon_path = tmp_path
+                except Exception as e:
+                    print(f"Falha ao decodificar ícone: {e}")
+                    icon_path = None
+
+            # ### AQUI ESTÁ A MUDANÇA ESSENCIAL ###
+            # Se icon_path for None, usamos string vazia em vez de None
+            icon_para_notify = icon_path or ""
+
+            # Exibe a notificação no Linux (plyer)
+            notification.notify(
+                title=f"Notificação de {app}",
+                message=content,
+                app_name="Integration4Linux",
+                timeout=10,
+                app_icon=icon_para_notify
+            )
+
+            # Remove arquivo temporário após 1s (se foi criado)
+            if icon_path:
+                time.sleep(1)
+                try:
+                    os.remove(icon_path)
+                except OSError:
+                    pass
+
+            # Limpa buffer para próxima mensagem JSON
+            buffer = b""

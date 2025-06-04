@@ -25,21 +25,11 @@ class BluetoothGUI(tk.Tk):
         self.connect_button = tk.Button(self, text="Connect", command=self.connect_to_device)
         self.connect_button.pack(pady=10)
 
-        # Seção para dispositivos pareados
-        self.paired_label = tk.Label(self, text="Dispositivos Pareados", font=("Helvetica", 12))
-        self.paired_label.pack(pady=10)
-
-        self.paired_listbox = tk.Listbox(self, width=50, height=10)
-        self.paired_listbox.pack(pady=10)
-
         # Inicializa o gerenciador de conexão Bluetooth com o callback de atualização de status
         self.connection_manager = BluetoothConnectionManager(
             uuid=UUID("f81d4fae-7dec-11d0-a765-00a0c91e6bf6"),
             status_callback=self.update_status
         )
-
-        # Mostra dispositivos pareados ao iniciar a aplicação
-        self.show_paired_devices()
 
         # Tenta conectar automaticamente a dispositivos pareados
         self.connection_manager.auto_connect_to_paired_devices()
