@@ -1,0 +1,13 @@
+# Ignorar ambientes virtuais comuns
+venv/
+.env/
+.venv/
+venv-py310/
+
+# Ignorar arquivos de cache do Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Ignorar arquivos de configuração do VS Code
+.vscode/
