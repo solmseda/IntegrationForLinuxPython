@@ -10,9 +10,10 @@ from plyer import notification
 from Clipboard_Data import ClipboardData
 
 class BluetoothConnectionManager:
-    # Package names for filtering notifications that can open a reply window
-    WHATSAPP_PACKAGE_NAME = "com.whatsapp"
-    TELEGRAM_PACKAGE_NAME = "org.telegram.messenger"
+    # User-facing app names for filtering notifications that can open a reply window
+    # These should match the 'appName' value received in the JSON from Android
+    WHATSAPP_APP_NAME = "WhatsApp"
+    TELEGRAM_APP_NAME = "Telegram"
 
     def __init__(self, uuid, status_callback=None, notification_callback=None):
         self.bluetooth_adapter = None
@@ -206,48 +207,58 @@ class BluetoothConnectionManager:
 
     def auto_connect_to_paired_devices(self):
         def connect_loop():
-            while True: # This outer loop ensures it keeps trying even after a disconnect
+            while True:
                 if self.is_connected:
-                    #print("Auto-connect: Already connected, sleeping.")
-                    time.sleep(5) # Check connection status every 5 seconds
-                    continue # Go back to check self.is_connected
+                    # Connection is active, just sleep and re-check.
+                    #print(f"auto_connect_loop: Connection active (is_connected={self.is_connected}). Sleeping.")
+                    time.sleep(5)  # Check status every 5 seconds
+                    continue
 
-                # Only attempt to find and connect if not already connected
+                # If not connected, proceed to attempt connection
+                #print(f"auto_connect_loop: No active connection (is_connected={self.is_connected}). Scanning.")
                 self.update_status("Procurando dispositivos pareados para conexão automática...")
                 paired_devices = self.list_paired_devices()
-                connected_this_cycle = False
 
                 if not paired_devices:
                     self.update_status("Nenhum dispositivo pareado encontrado. Tentando novamente em 10s...")
-                else:
-                    for address, name in paired_devices:
-                        if self.is_connected: # Check again in case connection happened while iterating
-                            connected_this_cycle = True
-                            break
+                    time.sleep(10)
+                    continue # Go back to check is_connected and potentially retry
 
-                        self.update_status(f"Verificando serviço em: {name} ({address})")
-                        service_matches = bluetooth.find_service(uuid=str(self.uuid), address=address)
+                connection_attempted_this_cycle = False
+                for address, name in paired_devices:
+                    # If by some chance connection was established by another thread/means while iterating
+                    if self.is_connected:
+                        #print(f"auto_connect_loop: Connection established mid-scan. Breaking device scan.")
+                        break # Break from device loop, outer loop will catch is_connected
 
-                        if service_matches:
-                            self.update_status(f"Dispositivo compatível: {name}. Tentando conectar...")
-                            if self.start_client(address): # start_client now sets self.is_connected
-                                self.update_status(f"Conectado automaticamente a: {name}")
-                                connected_this_cycle = True
-                                break # Exit inner loop (devices) once connected
-                            else:
-                                self.update_status(f"Falha ao conectar com {name}.")
+                    self.update_status(f"Verificando serviço em: {name} ({address})")
+                    service_matches = bluetooth.find_service(uuid=str(self.uuid), address=address)
+
+                    if service_matches:
+                        self.update_status(f"Dispositivo compatível: {name}. Tentando conectar...")
+                        connection_attempted_this_cycle = True
+                        if self.start_client(address):  # start_client sets self.is_connected to True on success
+                            self.update_status(f"Conectado automaticamente a: {name}")
+                            #print(f"auto_connect_loop: Successfully connected to {name}. Breaking device scan.")
+                            break  # Successfully connected, break from device loop
                         else:
-                            print(f"{name} ({address}) não possui o serviço com UUID esperado.")
+                            # start_client failed, self.is_connected should be False
+                            self.update_status(f"Falha ao conectar com {name}.")
+                            # Continue to the next device
+                    else:
+                        print(f"{name} ({address}) não possui o serviço com UUID esperado.")
 
-                if self.is_connected or connected_this_cycle:
-                    # If connected, just loop back and sleep via the self.is_connected check at the top
-                    #print("Auto-connect: Connection established or re-confirmed, will monitor.")
-                    time.sleep(5) # Brief pause before re-checking is_connected state
-                    continue
-
-                # If no connection was made in this cycle
-                self.update_status("Nenhum dispositivo conectado. Nova tentativa em 10s...")
-                time.sleep(10) # Wait before retrying the entire scan/connect process
+                # After iterating through all devices (or breaking due to successful connection)
+                if not self.is_connected and connection_attempted_this_cycle:
+                    # Attempted connection to one or more compatible devices but none succeeded
+                    self.update_status("Falha ao conectar com dispositivos compatíveis. Tentando novamente em 10s...")
+                    time.sleep(10)
+                elif not self.is_connected and not connection_attempted_this_cycle and paired_devices:
+                    # Paired devices exist, but none had the required service
+                    self.update_status("Nenhum dispositivo com serviço compatível encontrado. Tentando novamente em 10s...")
+                    time.sleep(10)
+                # If self.is_connected is True here, the outer loop's `if self.is_connected:` check will handle it.
+                # If no paired devices were found at all, that's handled by the first time.sleep(10) in this block.
 
         threading.Thread(target=connect_loop, daemon=True).start()
 
@@ -330,15 +341,15 @@ class BluetoothConnectionManager:
                 threading.Timer(5.0, lambda p=plyer_icon_path: os.remove(p) if os.path.exists(p) else None).start()
 
             # If a key is present and a callback is registered, invoke the callback
-            # only for specific apps (WhatsApp, Telegram).
+            # only for specific apps (WhatsApp, Telegram), comparing with the new app name constants.
             if key and self.notification_callback and \
-               (app_name == self.WHATSAPP_PACKAGE_NAME or app_name == self.TELEGRAM_PACKAGE_NAME):
+               (app_name == self.WHATSAPP_APP_NAME or app_name == self.TELEGRAM_APP_NAME):
                 print(f"App '{app_name}' is eligible for reply window. Invoking notification_callback for key: {key}")
                 # Pass icon_b64 directly to callback; it can decide to decode/save if needed for Toplevel
                 self.notification_callback(app_name, content, icon_b64, key)
-            elif key and self.notification_callback:
+            elif key and self.notification_callback: # Key and callback exist, but app_name doesn't match
                 print(f"Notification from app '{app_name}' with key '{key}' received, but app is not WhatsApp/Telegram. No reply window.")
-            elif key: # Key present, but no callback registered at all
+            elif key: # Key present, but no callback registered at all (should ideally not happen if GUI is running)
                 print(f"Notification with key '{key}' received, but no GUI callback registered for reply window (app: '{app_name}').")
 
 
