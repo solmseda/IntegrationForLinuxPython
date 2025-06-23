@@ -2,91 +2,90 @@ import tkinter as tk
 from tkinter import messagebox
 from bluetooth_connection_manager import BluetoothConnectionManager
 from uuid import UUID
+import json
 
 class BluetoothGUI(tk.Tk):
-    def __init__(self, connection_manager):
+    def __init__(self, manager):
         super().__init__()
         self.title("Integration4Linux")
-        self.geometry("800x600")
-
-        # Status label
-        self.status_label = tk.Label(self, text="Bem-vindo ao Integration4Linux", font=("Helvetica", 12))
-        self.status_label.pack(pady=10)
-
-        # Botão de escaneamento
-        self.scan_button = tk.Button(self, text="Scan Devices", command=self.start_scan)
-        self.scan_button.pack(pady=10)
-
-        # Listbox para dispositivos descobertos
-        self.device_listbox = tk.Listbox(self, width=50, height=10)
-        self.device_listbox.pack(pady=10)
-
-        # Botão para conectar
-        self.connect_button = tk.Button(self, text="Connect", command=self.connect_to_device)
-        self.connect_button.pack(pady=10)
-
-        # Inicializa o gerenciador de conexão Bluetooth com o callback de atualização de status
-        self.connection_manager = BluetoothConnectionManager(
-            uuid=UUID("f81d4fae-7dec-11d0-a765-00a0c91e6bf6"),
-            status_callback=self.update_status
-        )
-
-        # Tenta conectar automaticamente a dispositivos pareados
-        self.connection_manager.auto_connect_to_paired_devices()
-
+        self.geometry("600x400")
+        self.manager = manager
+        # Status
+        self.status_label = tk.Label(self, text="Pronto", font=(None,12))
+        self.status_label.pack(pady=5)
+        # Scan
+        tk.Button(self, text="Scan Devices", command=self.start_scan).pack(pady=5)
+        # Lista
+        self.lb = tk.Listbox(self)
+        self.lb.pack(fill='x', padx=10)
+        tk.Button(self, text="Connect", command=self.connect_selected).pack(pady=5)
+        # Inicializa auto-connect
+        self.manager.auto_connect_to_paired_devices()
 
     def start_scan(self):
-        """Realiza uma varredura para encontrar dispositivos Bluetooth próximos."""
-        # Limpa a lista de dispositivos descobertos antes de iniciar o novo escaneamento
-        self.device_listbox.delete(0, tk.END)
-        
-        # Atualiza o status para indicar que o escaneamento está em andamento
-        self.update_status("Escaneando por dispositivos...")
-        
-        # Executa o escaneamento de dispositivos Bluetooth
-        devices = self.connection_manager.scan_devices()
+        self.lb.delete(0, tk.END)
+        self.update_status("Escaneando...")
+        devices = self.manager.scan_devices()
+        for i,(addr,name) in enumerate(devices):
+            self.lb.insert(tk.END, f"{i}: {name} ({addr})")
+        self.update_status("Scan completo")
 
-        # Atualiza o status e preenche a lista com os dispositivos descobertos
-        if not devices:
-            self.update_status("Nenhum dispositivo encontrado.")
+    def connect_selected(self):
+        sel = self.lb.curselection()
+        if not sel:
+            return messagebox.showwarning("Seleção", "Selecione um dispositivo")
+        idx = int(self.lb.get(sel).split(':')[0])
+        addr = self.manager.devices[idx][0]
+        if self.manager.start_client(addr):
+            self.update_status(f"Conectado: {addr}")
         else:
-            self.update_status("Selecione um dispositivo para conectar.")
-            for idx, (address, name) in enumerate(devices):
-                self.device_listbox.insert(tk.END, f"{idx}: {name or 'Unknown'} ({address})")
+            self.update_status("Falha na conexão")
 
-    def show_paired_devices(self):
-        """Lista dispositivos já pareados na Listbox."""
-        paired_devices = self.connection_manager.list_paired_devices()
-        self.paired_listbox.delete(0, tk.END)
-        
-        for idx, (address, name) in enumerate(paired_devices):
-            self.paired_listbox.insert(tk.END, f"{idx}: {name or 'Unknown'} ({address})")
+    def update_status(self, msg):
+        self.status_label.config(text=msg)
 
-    def connect_to_device(self):
-        """Conecta ao dispositivo selecionado na lista de dispositivos descobertos."""
-        selected_idx = self.device_listbox.curselection()
-        if selected_idx:
-            device_index = int(self.device_listbox.get(selected_idx).split(":")[0])
-            device_address = self.connection_manager.devices[device_index][0]  # Pega o endereço MAC
+    def open_reply_window(self, app, content):
+        win = tk.Toplevel(self)
+        win.title(f"Responder a {app}")
+        tk.Label(win, text=f"{app}: {content}").pack(padx=10, pady=5)
+        entry = tk.Entry(win, width=50)
+        entry.pack(padx=10, pady=5)
+        def send_reply():
+            text = entry.get().strip()
+            if not text:
+                return
+            payload = {
+                'replyTo': app,
+                'reply': text
+            }
+            data = json.dumps(payload) + "\n"
 
-            if self.connection_manager.start_client(device_address):
-                messagebox.showinfo("Connection", f"Conectado ao dispositivo {device_address}")
-            else:
-                messagebox.showerror("Connection Error", "Não foi possível conectar ao dispositivo.")
-        else:
-            messagebox.showwarning("Selection Error", "Selecione um dispositivo da lista para conectar.")
+            # ——— AQUI EMBAIXO: LOG NO PYTHON ———
+            print(f"[Python] Enviando reply JSON para Android: {data!r}")
 
-    def update_status(self, message):
-        """Atualiza a label de status com uma nova mensagem."""
-        self.status_label.config(text=message)
+            try:
+                self.manager.bluetooth_socket.send(data.encode('utf-8'))
+                print("[Python] send() completou sem exceção")
+                win.destroy()
+            except Exception as e:
+                print(f"[Python] Erro ao enviar reply: {e}")
+        tk.Button(win, text="Enviar", command=send_reply).pack(pady=5)
 
 
 def run_gui():
-    service_uuid = UUID("f81d4fae-7dec-11d0-a765-00a0c91e6bf6")
-    connection_manager = BluetoothConnectionManager(service_uuid)
-
-    app = BluetoothGUI(connection_manager)
-    app.mainloop()
-
-if __name__ == "__main__":
-    run_gui()
+    srv = UUID("f81d4fae-7dec-11d0-a765-00a0c91e6bf6")
+    app = None
+    def create_app():
+        nonlocal app
+        manager = BluetoothConnectionManager(
+            uuid=srv,
+            status_callback=lambda m: app.update_status(m),
+            callback_obj=None,
+            message_callback=lambda a,c: app.open_reply_window(a,c)
+        )
+        app = BluetoothGUI(manager)
+        # set callback_obj after init
+        manager.callback_obj = app
+        return app
+    gui = create_app()
+    gui.mainloop()

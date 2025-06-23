@@ -7,283 +7,198 @@ import base64
 import tempfile
 import os
 from plyer import notification
-from Clipboard_Data import ClipboardData
 
 class BluetoothConnectionManager:
-    def __init__(self, uuid, status_callback=None):
-        self.bluetooth_adapter = None
-        self.bluetooth_socket = None
-        self.input_stream = None
-        self.output_stream = None
+    def __init__(self, uuid, status_callback=None, callback_obj=None, message_callback=None):
         self.uuid = str(uuid)
-        self.device = None
+        self.bluetooth_socket = None
         self.devices = []
-        self.status_callback = status_callback  # Callback para atualizar o status na GUI
+        self.status_callback = status_callback    # função para atualizar status na GUI
+        self.callback_obj = callback_obj          # objeto Tkinter, para usar after()
+        self.message_callback = message_callback  # callback para abrir janela de resposta
+        self.received_ids = set()                 # para evitar duplicatas via notificationId
 
     def update_status(self, message):
-        """Chama o callback para atualizar o status na GUI, se disponível."""
-        if self.status_callback:
-            self.status_callback(message)
-
-    def start_server(self):
-        # Placeholder para o servidor Bluetooth
-        pass
-
-    def authenticate(self):
-        # Placeholder para lógica de autenticação
-        pass
-
-    def start_client(self, device_address):
-        # Verifica se o dispositivo já está pareado
-        already_paired = any(device[0] == device_address for device in self.list_paired_devices())
-
-        if not already_paired:
-            if not self.pair_device(device_address):
-                self.update_status("Pareamento falhou. Não foi possível conectar.")
-                return False
-        else:
-            print(f"Dispositivo {device_address} já está pareado. Pulando etapa de pareamento.")
-
-        try:
-            print(f"Tentando conectar ao dispositivo {device_address} com UUID {self.uuid}...")
-            self.update_status(f"Conectando ao dispositivo {device_address}...")
-
-            # Primeira tentativa: buscar serviço via SDP
-            service_matches = bluetooth.find_service(uuid=self.uuid, address=device_address)
-
-            if service_matches:
-                first_match = service_matches[0]
-                port = first_match["port"]
-                host = first_match["host"]
-                print(f"Serviço encontrado! Conectando ao host {host} na porta {port}")
-            else:
-                # Fallback: conecta diretamente
-                print("Nenhum serviço encontrado via SDP. Tentando conexão direta na porta 1.")
-                port = 1
-                host = device_address
-
-            self.bluetooth_socket = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
-            self.bluetooth_socket.connect((host, port))
-            print(f"Conectado ao dispositivo {device_address}")
-            self.update_status(f"Conectado ao dispositivo {device_address} com sucesso.")
-            
-            # Inicia o listener para receber dados
-            threading.Thread(target=self.listen_for_messages, daemon=True).start()
-
-            return True
-
-        except bluetooth.BluetoothError as e:
-            print(f"Erro ao conectar: {e}")
-            self.update_status("Erro ao conectar.")
-            return False
-
-    def receive_notification(self, notification_data):
-        try:
-            data = self.input_stream.read(1024)
-            notification_data.content = data.decode("utf-8")
-            print(f"Notificação recebida: {notification_data.content}")
-
-            self.show_system_notification(notification_data)
-            
-        except Exception as e:
-            print(f"Erro ao receber notificação: {e}")
-
-    def show_system_notification(self, notification_data):
-        notification.notify(
-            title=f"Notificação de {notification_data.app_name}",
-            message=notification_data.content,
-            app_name=notification_data.app_name,
-            timeout=10,
-        )
-    
-    def receive_clipboard_data(self):
-        try:
-            data = self.input_stream.read(1024)
-            clipboard_data = ClipboardData(content=data.decode("utf-8"))
-            print(f"Dados da área de transferência recebidos: {clipboard_data.content}")
-            return clipboard_data
-        except Exception as e:
-            print(f"Erro ao receber dados da área de transferência: {e}")
-            return None
-
-    def send_message(self, message):
-        try:
-            self.output_stream.write(message.encode("utf-8"))
-            self.output_stream.flush()
-            print(f"Mensagem enviada: {message}")
-        except Exception as e:
-            print(f"Erro ao enviar mensagem: {e}")
-
-    def send_clipboard(self, clipboard_data):
-        try:
-            self.output_stream.write(clipboard_data.content.encode("utf-8"))
-            self.output_stream.flush()
-            print(f"Dados da área de transferência enviados: {clipboard_data.content}")
-        except Exception as e:
-            print(f"Erro ao enviar dados da área de transferência: {e}")
-
-    def close_connection(self):
-        try:
-            if self.input_stream:
-                self.input_stream.close()
-            if self.output_stream:
-                self.output_stream.close()
-            if self.bluetooth_socket:
-                self.bluetooth_socket.close()
-            print("Conexão Bluetooth encerrada.")
-        except Exception as e:
-            print(f"Erro ao fechar conexão: {e}")
+        # printa no console e atualiza a GUI
+        print(f"[STATUS] {message}")
+        if self.status_callback and self.callback_obj:
+            # agenda no loop principal do Tkinter
+            self.callback_obj.after(0, lambda: self.status_callback(message))
 
     def scan_devices(self):
-        print("Iniciando o scan de dispositivos Bluetooth...")
-        self.devices = bluetooth.discover_devices(lookup_names=True)
-
-        if not self.devices:
-            print("Nenhum dispositivo encontrado.")
-        else:
-            print("Dispositivos encontrados:")
-            for idx, (address, name) in enumerate(self.devices):
-                print(f"{idx}: {name or 'Desconhecido'} ({address})")
-
-        return self.devices
-    
-    def list_paired_devices(self):
-        """Retorna uma lista de dispositivos pareados com endereço e nome."""
-        paired_devices = []
-        
+        self.update_status("Iniciando scan de dispositivos...")
         try:
-            # Executa o comando para listar dispositivos pareados
+            self.devices = bluetooth.discover_devices(lookup_names=True)
+        except Exception as e:
+            print(f"[ERROR] Erro no scan: {e}")
+            self.update_status("Erro ao escanear dispositivos.")
+            return []
+
+        if self.devices:
+            self.update_status(f"{len(self.devices)} dispositivo(s) encontrado(s).")
+        else:
+            self.update_status("Nenhum dispositivo encontrado.")
+        return self.devices
+
+    def list_paired_devices(self):
+        print("[ACTION] Listando dispositivos pareados...")
+        paired = []
+        try:
             output = subprocess.check_output(["bluetoothctl", "paired-devices"]).decode("utf-8")
             for line in output.splitlines():
                 parts = line.split(" ", 2)
                 if len(parts) >= 3:
-                    address = parts[1]
-                    name = parts[2]
-                    paired_devices.append((address, name))
+                    paired.append((parts[1], parts[2]))
+            print(f"[RESULT] Dispositivos pareados: {paired}")
         except subprocess.CalledProcessError as e:
-            print(f"Erro ao obter dispositivos pareados: {e}")
-        
-        return paired_devices
-    
-    def pair_device(self, device_address):
-        try:
-            paired_devices = self.list_paired_devices()
-            if any(device[0] == device_address for device in paired_devices):
-                print(f"Dispositivo {device_address} já está pareado.")
-                self.update_status(f"Dispositivo {device_address} já está pareado.")
-                return True
+            print(f"[ERROR] Erro ao listar dispositivos pareados: {e}")
+        return paired
 
-            print(f"Tentando parear com o dispositivo {device_address}...")
-            self.update_status(f"Iniciando pareamento com {device_address}...")
-            subprocess.run(["bluetoothctl", "pair", device_address], check=True)
-            subprocess.run(["bluetoothctl", "trust", device_address], check=True)
-            print(f"Dispositivo {device_address} pareado com sucesso.")
-            self.update_status(f"Pareamento com {device_address} realizado com sucesso.")
+    def pair_device(self, address):
+        if any(addr == address for addr, _ in self.list_paired_devices()):
+            self.update_status(f"Já pareado: {address}")
+            return True
+        try:
+            self.update_status(f"Pareando com {address}...")
+            subprocess.run(["bluetoothctl", "pair", address], check=True)
+            subprocess.run(["bluetoothctl", "trust", address], check=True)
+            self.update_status(f"Pareamento concluído: {address}")
             return True
         except subprocess.CalledProcessError as e:
-            print(f"Erro ao parear com o dispositivo {device_address}: {e}")
-            self.update_status(f"Erro ao parear com {device_address}.")
+            print(f"[ERROR] Falha no pareamento: {e}")
+            self.update_status(f"Falha no pareamento: {e}")
             return False
 
+    def start_client(self, address):
+        self.update_status(f"Iniciando cliente para {address}...")
+        # garante pareamento
+        if not any(addr == address for addr, _ in self.list_paired_devices()):
+            if not self.pair_device(address):
+                return False
+
+        # busca serviço via SDP
+        print(f"[ACTION] Procurando serviço UUID={self.uuid} em {address}")
+        try:
+            matches = bluetooth.find_service(uuid=self.uuid, address=address)
+        except Exception as e:
+            print(f"[ERROR] Erro ao buscar serviço: {e}")
+            matches = []
+
+        if matches:
+            host = matches[0]["host"]
+            port = matches[0]["port"]
+            print(f"[RESULT] Serviço encontrado em {host}:{port}")
+        else:
+            host, port = address, 1
+            print(f"[WARN] Nenhum serviço SDP; usando fallback {host}:{port}")
+
+        try:
+            self.bluetooth_socket = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
+            self.bluetooth_socket.connect((host, port))
+            self.update_status(f"Conectado a {address}")
+        except bluetooth.BluetoothError as e:
+            print(f"[ERROR] Erro de conexão: {e}")
+            self.update_status(f"Erro de conexão: {e}")
+            return False
+
+        # inicia thread de recepção
+        threading.Thread(target=self.listen_for_messages, daemon=True).start()
+        return True
+
     def auto_connect_to_paired_devices(self):
-        def connect_loop():
+        def loop():
+            print("[AUTO] Iniciando auto-connection loop")
             while True:
-                paired_devices = self.list_paired_devices()
-
-                for address, name in paired_devices:
-                    self.update_status(f"Verificando serviço no dispositivo: {name} ({address})")
-                    
-                    service_matches = bluetooth.find_service(uuid=str(self.uuid), address=address)
-
-                    if service_matches:
-                        self.update_status(f"Dispositivo compatível encontrado: {name} ({address})")
-                        if self.start_client(address):
-                            self.update_status(f"Conectado automaticamente ao dispositivo: {name} ({address})")
-                            return  # Parar após conectar
-                    else:
-                        print(f"{name} não possui o serviço com UUID esperado.")
-
-                self.update_status("Nenhum dispositivo com serviço compatível encontrado. Tentando novamente em 10s...")
+                for addr, name in self.list_paired_devices():
+                    self.update_status(f"Verificando {name} ({addr})")
+                    try:
+                        matches = bluetooth.find_service(uuid=self.uuid, address=addr)
+                    except Exception:
+                        matches = []
+                    if matches and self.start_client(addr):
+                        print(f"[AUTO] Conectado automaticamente a {addr}")
+                        return
+                self.update_status("Nenhum dispositivo compatível. Tentando novamente em 10s...")
                 time.sleep(10)
-
-        threading.Thread(target=connect_loop, daemon=True).start()
-
+        threading.Thread(target=loop, daemon=True).start()
 
     def listen_for_messages(self):
+        print("[LISTEN] Thread de recepção iniciada")
         buffer = b""
         while True:
             try:
                 chunk = self.bluetooth_socket.recv(1024)
             except Exception as e:
-                print(f"Erro no recv: {e}")
+                print(f"[ERROR] Erro no recv: {e}")
                 self.update_status("Erro na conexão.")
                 return
 
             if not chunk:
-                # conexão foi fechada pelo outro lado
-                print("Conexão fechada pelo dispositivo Android.")
+                print("[INFO] Conexão fechada pelo dispositivo Android.")
                 self.update_status("Dispositivo desconectado.")
                 return
 
-            # Acumula o pedaço recebido no buffer
             buffer += chunk
 
-            # Tenta decodificar o buffer inteiro como JSON.
+            # tenta parsear JSON completo
             try:
-                texto_completo = buffer.decode("utf-8")
-                mensagem_json = json.loads(texto_completo)
+                texto = buffer.decode('utf-8')
+                data = json.loads(texto)
             except json.JSONDecodeError:
-                # JSON ainda incompleto; aguardamos mais bytes
+                # incompleto
                 continue
 
-            # Se chegou aqui, 'mensagem_json' é um dicionário Python válido.
-
-            # Evita duplicação (se existir "notificationId")
-            notif_id = mensagem_json.get("notificationId")
-            if notif_id and (notif_id in self.received_ids):
-                buffer = b""  # limpa buffer para próxima mensagem
+            # evita duplicatas
+            nid = data.get('notificationId')
+            if nid and nid in self.received_ids:
+                buffer = b""
                 continue
-            if notif_id:
-                self.received_ids.add(notif_id)
+            if nid:
+                self.received_ids.add(nid)
 
-            # Extrai campos
-            app = mensagem_json.get("appName", "Aplicativo Android")
-            content = mensagem_json.get("content", "")
-            icon_b64 = mensagem_json.get("iconBase64")
+            # extrai campos
+            app = data.get('appName', '')
+            content = data.get('content', '')
+            icon_b64 = data.get('iconBase64')
 
-            # Se houver iconBase64, grava num arquivo temporário
+            print(f"[MESSAGE] Recebida de {app}: {content}")
+
             icon_path = None
             if icon_b64:
                 try:
-                    png_bytes = base64.b64decode(icon_b64)
-                    fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="android_icon_")
-                    os.write(fd, png_bytes)
+                    png = base64.b64decode(icon_b64)
+                    fd, tmp = tempfile.mkstemp(suffix='.png', prefix='android_icon_')
+                    os.write(fd, png)
                     os.close(fd)
-                    icon_path = tmp_path
+                    icon_path = tmp
+                    print(f"[ACTION] Ícone salvo em {icon_path}")
                 except Exception as e:
-                    print(f"Falha ao decodificar ícone: {e}")
+                    print(f"[ERROR] Falha ao decodificar ícone: {e}")
                     icon_path = None
 
-            # ### AQUI ESTÁ A MUDANÇA ESSENCIAL ###
-            # Se icon_path for None, usamos string vazia em vez de None
-            icon_para_notify = icon_path or ""
-
-            # Exibe a notificação no Linux (plyer)
+            # mostra notificação
             notification.notify(
                 title=f"Notificação de {app}",
                 message=content,
                 app_name="Integration4Linux",
                 timeout=10,
-                app_icon=icon_para_notify
+                app_icon=(icon_path or "")
             )
+            print("[NOTIFY] Notificação exibida")
 
-            # Remove arquivo temporário após 1s (se foi criado)
+            # se for app de mensagens, abre janela de resposta
+            if self.message_callback and app.lower() in ('whatsapp', 'telegram'):
+                print(f"[CALLBACK] Abrindo janela de resposta para {app}")
+                self.callback_obj.after(0, lambda a=app, c=content: self.message_callback(a, c))
+
+            # limpa buffer
+            buffer = b""
+
+            # remove ícone temporário
             if icon_path:
                 time.sleep(1)
                 try:
                     os.remove(icon_path)
-                except OSError:
-                    pass
-
-            # Limpa buffer para próxima mensagem JSON
-            buffer = b""
+                    print(f"[CLEANUP] Ícone removido: {icon_path}")
+                except OSError as e:
+                    print(f"[WARN] Falha ao remover ícone: {e}")
