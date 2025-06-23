@@ -26,28 +26,14 @@ class BluetoothGUI(tk.Tk):
         self.connect_button = tk.Button(self, text="Connect", command=self.connect_to_device)
         self.connect_button.pack(pady=10)
 
-        # --- UI Elements for Notifications and Replies ---
-        self.notification_label = tk.Label(self, text="Notifications:", font=("Helvetica", 10))
-        self.notification_label.pack(pady=(10,0))
+        # Inicializa o gerenciador de conexão Bluetooth com o callback de atualização de status
+        self.connection_manager = BluetoothConnectionManager(
+            uuid=UUID("f81d4fae-7dec-11d0-a765-00a0c91e6bf6"),
+            status_callback=self.update_status
+        )
 
-        self.notification_listbox = tk.Listbox(self, width=70, height=10, exportselection=False)
-        self.notification_listbox.pack(pady=5)
-
-        self.reply_entry = tk.Entry(self, width=50)
-        self.reply_entry.pack(pady=5)
-
-        self.reply_button = tk.Button(self, text="Reply to Selected", command=self.send_reply)
-        self.reply_button.pack(pady=5)
-
-        self.notifications_data = [] # To store {'key': key, 'app_name': app, 'content': content, 'icon_base64': icon_b64}
-
-        # O connection_manager é passado pelo construtor, já configurado com callbacks
-        self.connection_manager = connection_manager
-        if self.connection_manager:
-            # Tenta conectar automaticamente a dispositivos pareados
-            self.connection_manager.auto_connect_to_paired_devices()
-        else:
-            self.update_status("Error: Connection Manager not provided.")
+        # Tenta conectar automaticamente a dispositivos pareados
+        self.connection_manager.auto_connect_to_paired_devices()
 
 
     def start_scan(self):
@@ -97,91 +83,90 @@ class BluetoothGUI(tk.Tk):
 
     def handle_incoming_notification(self, app_name, content, icon_base64, key):
         """
-        Callback para o BluetoothConnectionManager. Chamado quando uma nova notificação é recebida.
-        Exibe a notificação na GUI e armazena seus dados para futuras respostas.
+        Callback from BluetoothConnectionManager for notifications with a 'key'.
+        Creates a new Toplevel window to allow replying to the notification.
         """
-        display_text = f"[{app_name}] {content}"
-        # Adiciona à Listbox para visualização
-        self.notification_listbox.insert(tk.END, display_text)
-        # Armazena os dados completos, incluindo a chave
-        self.notifications_data.append({
-            "key": key,
-            "app_name": app_name,
-            "content": content,
-            "icon_base64": icon_base64, # GUI pode usar isso para exibir ícone se desejado
-            "listbox_text": display_text
-        })
-        print(f"GUI: Received notification '{key}' from '{app_name}'. Stored.")
-        # Optionally, scroll to the new notification
-        self.notification_listbox.see(tk.END)
+        print(f"GUI: handle_incoming_notification for key: {key}")
+        reply_window = tk.Toplevel(self)
+        reply_window.title(f"Reply to {app_name}")
+        reply_window.geometry("400x200")
+        reply_window.transient(self) # Makes it behave like a dialog of the main window
+        reply_window.grab_set() # Modal behavior
 
-    def send_reply(self):
+        # Display notification info
+        info_text = f"Replying to:\nApp: {app_name}\nMessage: {content}"
+        # Use a Message widget for potentially multi-line content
+        info_label = tk.Message(reply_window, text=info_text, width=380, anchor="w", justify="left")
+        info_label.pack(pady=10, padx=10, expand=True, fill=tk.X)
+
+        reply_entry = tk.Entry(reply_window, width=50)
+        reply_entry.pack(pady=5, padx=10)
+        reply_entry.focus_set() # Set focus to the entry field
+
+        # Send button
+        send_button = tk.Button(
+            reply_window,
+            text="Send Reply",
+            command=lambda k=key, e=reply_entry, rw=reply_window: self.send_reply_from_toplevel(k, e, rw)
+        )
+        send_button.pack(pady=10)
+
+        # Bind Enter key to send_button's command
+        reply_entry.bind("<Return>", lambda event, k=key, e=reply_entry, rw=reply_window: self.send_reply_from_toplevel(k, e, rw))
+
+        # Center the Toplevel window (optional, but good UX)
+        reply_window.update_idletasks() # Ensure window dimensions are calculated
+        x = self.winfo_x() + (self.winfo_width() // 2) - (reply_window.winfo_width() // 2)
+        y = self.winfo_y() + (self.winfo_height() // 2) - (reply_window.winfo_height() // 2)
+        reply_window.geometry(f"+{x}+{y}")
+
+
+    def send_reply_from_toplevel(self, key, entry_widget, toplevel_window):
         """
-        Prepara e envia uma resposta para a notificação selecionada na Listbox.
-        (A lógica de envio do JSON será completada na Etapa 3 do plano)
+        Sends the reply constructed in a Toplevel window.
         """
-        selected_indices = self.notification_listbox.curselection()
-        reply_text = self.reply_entry.get()
-
-        if not selected_indices:
-            messagebox.showwarning("Reply Error", "Please select a notification to reply to.")
-            return
-
+        reply_text = entry_widget.get()
         if not reply_text.strip():
-            messagebox.showwarning("Reply Error", "Reply text cannot be empty.")
+            messagebox.showwarning("Empty Reply", "Reply text cannot be empty.", parent=toplevel_window)
+            entry_widget.focus_set()
             return
 
-        selected_index = selected_indices[0]
+        print(f"GUI: Sending reply for key '{key}': {reply_text}")
+        reply_payload = {"key": key, "reply": reply_text}
 
-        if 0 <= selected_index < len(self.notifications_data):
-            notification_to_reply = self.notifications_data[selected_index]
-            key_to_reply = notification_to_reply["key"]
+        try:
+            json_payload = json.dumps(reply_payload)
+        except TypeError as e:
+            messagebox.showerror("JSON Error", f"Could not construct reply JSON: {e}", parent=toplevel_window)
+            return
 
-            print(f"GUI: Preparing to send reply to key '{key_to_reply}' with text: '{reply_text}'")
-
-            # Construct the JSON payload
-            reply_payload = {
-                "key": key_to_reply,
-                "reply": reply_text
-            }
+        if self.connection_manager and self.connection_manager.bluetooth_socket and self.connection_manager.output_stream:
             try:
-                json_payload = json.dumps(reply_payload)
-            except TypeError as e:
-                messagebox.showerror("Reply Error", f"Could not construct reply JSON: {e}")
-                return
-
-            # Send the JSON message via BluetoothConnectionManager
-            if self.connection_manager and self.connection_manager.bluetooth_socket and self.connection_manager.output_stream:
-                try:
-                    self.connection_manager.send_message(json_payload)
-                    self.reply_entry.delete(0, tk.END)
-                    messagebox.showinfo("Reply Sent", f"Reply sent for notification key {key_to_reply}.")
-                except Exception as e:
-                    messagebox.showerror("Send Error", f"Failed to send reply: {e}")
-            else:
-                messagebox.showerror("Connection Error", "Not connected or output stream unavailable. Cannot send reply.")
+                self.connection_manager.send_message(json_payload)
+                messagebox.showinfo("Reply Sent", "Reply sent successfully!", parent=toplevel_window)
+                toplevel_window.destroy()
+            except Exception as e:
+                messagebox.showerror("Send Error", f"Failed to send reply: {e}", parent=toplevel_window)
+                toplevel_window.destroy() # Also close on error after showing message
         else:
-            messagebox.showerror("Reply Error", "Selected notification data not found. Index out of range.")
+            messagebox.showerror("Connection Error", "Not connected or output stream unavailable. Cannot send reply.", parent=toplevel_window)
+            toplevel_window.destroy() # Also close on error
 
 
 def run_gui():
-    app = BluetoothGUI(None)  # Pass None initially, connection_manager is created inside
+    # This function will be updated in the next step to correctly pass the callback
+    app = BluetoothGUI(None)  # Pass None initially
 
-    # Criar e configurar o BluetoothConnectionManager
-    # Precisamos de uma instância de app para os callbacks
     service_uuid = UUID("f81d4fae-7dec-11d0-a765-00a0c91e6bf6")
     connection_manager = BluetoothConnectionManager(
         uuid=service_uuid,
-        status_callback=app.update_status, # GUI method
-        notification_callback=app.handle_incoming_notification # GUI method
+        status_callback=app.update_status,
+        notification_callback=app.handle_incoming_notification # This is key
     )
-    app.connection_manager = connection_manager # Assign the configured manager to the app instance
+    app.connection_manager = connection_manager # Assign the configured manager
 
-    # Agora que o manager está configurado e atribuído, podemos chamar auto_connect
     if app.connection_manager:
         app.connection_manager.auto_connect_to_paired_devices()
-    else: # Deve ser redundante se a lógica acima estiver correta
-        app.update_status("Critical Error: Connection Manager could not be initialized.")
 
     app.mainloop()
 
