@@ -13,14 +13,14 @@ class BluetoothConnectionManager:
     def __init__(self, uuid, status_callback=None, notification_callback=None):
         self.bluetooth_adapter = None
         self.bluetooth_socket = None
-        self.input_stream = None # Should be set in start_client after socket connection
-        self.output_stream = None # Should be set in start_client after socket connection
+        self.input_stream = None
+        self.output_stream = None
         self.uuid = str(uuid)
         self.device = None
         self.devices = []
         self.status_callback = status_callback  # Callback para atualizar o status na GUI
-        self.notification_callback = notification_callback # Callback para notificar a GUI
-        self.received_ids = set() # To prevent duplicate notifications if Android sends an ID
+        self.notification_callback = notification_callback # Callback para notificar a GUI sobre novas notificações
+        self.received_ids = set() # Para evitar notificações duplicadas baseadas em notificationId
 
     def update_status(self, message):
         """Chama o callback para atualizar o status na GUI, se disponível."""
@@ -66,6 +66,9 @@ class BluetoothConnectionManager:
 
             self.bluetooth_socket = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
             self.bluetooth_socket.connect((host, port))
+            # Initialize streams after successful connection
+            self.input_stream = self.bluetooth_socket.makefile('rb')
+            self.output_stream = self.bluetooth_socket.makefile('wb')
             print(f"Conectado ao dispositivo {device_address}")
             self.update_status(f"Conectado ao dispositivo {device_address} com sucesso.")
             
@@ -254,54 +257,63 @@ class BluetoothConnectionManager:
             icon_b64 = mensagem_json.get("iconBase64")
             key = mensagem_json.get("key") # <<< Extract the key
 
-            if key: # We must have a key to make it useful for replies
-                print(f"Notification received: App: {app_name}, Content: {content}, Key: {key}")
+            print(f"Notification JSON received: appName={app_name}, content={content}, key={key is not None}, iconBase64={icon_b64 is not None}")
 
-                icon_path = None
+            if self.notification_callback and key:
+                # Pass icon_b64 directly; GUI callback can handle temp file if needed for display
+                self.notification_callback(app_name, content, icon_b64, key)
+            elif key: # Has key, but no callback - log this, maybe notify simply
+                print(f"Notification with key '{key}' received but no GUI callback registered.")
+                # Fallback to direct plyer notification for notifications with a key but no callback
+                icon_path_temp = None
                 if icon_b64:
                     try:
                         png_bytes = base64.b64decode(icon_b64)
-                        # It's better to let the GUI manager handle temp file creation if needed
-                        # For now, we'll just pass the base64 string or handle it in the callback
-                        icon_path = icon_b64 # Or pass png_bytes directly, or save and pass path
+                        fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="android_icon_")
+                        os.write(fd, png_bytes)
+                        os.close(fd)
+                        icon_path_temp = tmp_path
+                    except Exception as e:
+                        print(f"Falha ao decodificar ícone para fallback: {e}")
+
+                notification.notify(
+                    title=f"Notificação de {app_name}",
+                    message=content + (f"\nKey: {key}" if key else ""), # Append key if exists
+                    app_name="Integration4Linux (No GUI Callback)",
+                    timeout=10,
+                    app_icon=icon_path_temp or ""
+                )
+                if icon_path_temp:
+                    time.sleep(1)
+                    try: os.remove(icon_path_temp)
+                    except OSError: pass
+            else:
+                # No key in notification, or no callback and no key.
+                # Old behavior: display notifications even without a key using plyer directly.
+                # This part can be kept if non-replyable notifications should still be shown by plyer.
+                print(f"Notification received (no key or no callback for key). App: {app_name}, Content: {content}")
+                icon_path_temp = None
+                if icon_b64:
+                    try:
+                        png_bytes = base64.b64decode(icon_b64)
+                        fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="android_icon_")
+                        os.write(fd, png_bytes)
+                        os.close(fd)
+                        icon_path_temp = tmp_path
                     except Exception as e:
                         print(f"Falha ao decodificar ícone: {e}")
-                        # icon_path remains None
 
-                if self.notification_callback:
-                    self.notification_callback(app_name, content, icon_path, key)
-                else:
-                    # Fallback to old behavior if no callback is registered
-                    # (though GUI should always register it)
-                    display_icon_path = None
-                    if icon_b64: # Re-decode if not passed to a callback that handles it
-                        try:
-                            png_bytes = base64.b64decode(icon_b64)
-                            fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="android_icon_")
-                            os.write(fd, png_bytes)
-                            os.close(fd)
-                            display_icon_path = tmp_path
-                        except Exception as e:
-                            print(f"Falha ao decodificar ícone para fallback: {e}")
-
-                    notification.notify(
-                        title=f"Notificação de {app_name}",
-                        message=content,
-                        app_name="Integration4Linux",
-                        timeout=10,
-                        app_icon=display_icon_path or ""
-                    )
-                    if display_icon_path:
-                        time.sleep(1) # Keep the sleep if using temp file for plyer
-                        try:
-                            os.remove(display_icon_path)
-                        except OSError:
-                            pass
-            else:
-                print(f"Notification received without key. App: {app_name}, Content: {content}")
-                # Optionally, still display notifications that don't have a key,
-                # but they won't be replyable. For now, only process if key exists for reply feature.
-
+                notification.notify(
+                    title=f"Notificação de {app_name}",
+                    message=content,
+                    app_name="Integration4Linux",
+                    timeout=10,
+                    app_icon=icon_path_temp or ""
+                )
+                if icon_path_temp:
+                    time.sleep(1)
+                    try: os.remove(icon_path_temp)
+                    except OSError: pass
 
             # Limpa buffer para próxima mensagem JSON
             buffer = b""
