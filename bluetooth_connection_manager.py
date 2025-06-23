@@ -16,13 +16,11 @@ class BluetoothConnectionManager:
         self.status_callback = status_callback    # função para atualizar status na GUI
         self.callback_obj = callback_obj          # objeto Tkinter, para usar after()
         self.message_callback = message_callback  # callback para abrir janela de resposta
-        self.received_ids = set()                 # para evitar duplicatas via notificationId
+        self.received_ids = set()                 # para evitar duplicatas via key
 
     def update_status(self, message):
-        # printa no console e atualiza a GUI
         print(f"[STATUS] {message}")
         if self.status_callback and self.callback_obj:
-            # agenda no loop principal do Tkinter
             self.callback_obj.after(0, lambda: self.status_callback(message))
 
     def scan_devices(self):
@@ -71,12 +69,10 @@ class BluetoothConnectionManager:
 
     def start_client(self, address):
         self.update_status(f"Iniciando cliente para {address}...")
-        # garante pareamento
         if not any(addr == address for addr, _ in self.list_paired_devices()):
             if not self.pair_device(address):
                 return False
 
-        # busca serviço via SDP
         print(f"[ACTION] Procurando serviço UUID={self.uuid} em {address}")
         try:
             matches = bluetooth.find_service(uuid=self.uuid, address=address)
@@ -101,7 +97,6 @@ class BluetoothConnectionManager:
             self.update_status(f"Erro de conexão: {e}")
             return False
 
-        # inicia thread de recepção
         threading.Thread(target=self.listen_for_messages, daemon=True).start()
         return True
 
@@ -140,23 +135,19 @@ class BluetoothConnectionManager:
 
             buffer += chunk
 
-            # tenta parsear JSON completo
             try:
                 texto = buffer.decode('utf-8')
                 data = json.loads(texto)
             except json.JSONDecodeError:
-                # incompleto
                 continue
 
-            # evita duplicatas
-            nid = data.get('notificationId')
-            if nid and nid in self.received_ids:
+            key = data.get('key')
+            if key and key in self.received_ids:
                 buffer = b""
                 continue
-            if nid:
-                self.received_ids.add(nid)
+            if key:
+                self.received_ids.add(key)
 
-            # extrai campos
             app = data.get('appName', '')
             content = data.get('content', '')
             icon_b64 = data.get('iconBase64')
@@ -176,7 +167,6 @@ class BluetoothConnectionManager:
                     print(f"[ERROR] Falha ao decodificar ícone: {e}")
                     icon_path = None
 
-            # mostra notificação
             notification.notify(
                 title=f"Notificação de {app}",
                 message=content,
@@ -186,15 +176,12 @@ class BluetoothConnectionManager:
             )
             print("[NOTIFY] Notificação exibida")
 
-            # se for app de mensagens, abre janela de resposta
             if self.message_callback and app.lower() in ('whatsapp', 'telegram'):
                 print(f"[CALLBACK] Abrindo janela de resposta para {app}")
-                self.callback_obj.after(0, lambda a=app, c=content: self.message_callback(a, c))
+                self.callback_obj.after(0, lambda k=key, a=app, c=content: self.message_callback(k, a, c))
 
-            # limpa buffer
             buffer = b""
 
-            # remove ícone temporário
             if icon_path:
                 time.sleep(1)
                 try:

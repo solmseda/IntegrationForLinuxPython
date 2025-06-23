@@ -44,7 +44,7 @@ class BluetoothGUI(tk.Tk):
     def update_status(self, msg):
         self.status_label.config(text=msg)
 
-    def open_reply_window(self, app, content):
+    def open_reply_window(self, key, app, content):
         win = tk.Toplevel(self)
         win.title(f"Responder a {app}")
         tk.Label(win, text=f"{app}: {content}").pack(padx=10, pady=5)
@@ -55,12 +55,11 @@ class BluetoothGUI(tk.Tk):
             if not text:
                 return
             payload = {
-                'replyTo': app,
+                'key': key,
                 'reply': text
             }
             data = json.dumps(payload) + "\n"
 
-            # ——— AQUI EMBAIXO: LOG NO PYTHON ———
             print(f"[Python] Enviando reply JSON para Android: {data!r}")
 
             try:
@@ -81,10 +80,9 @@ def run_gui():
             uuid=srv,
             status_callback=lambda m: app.update_status(m),
             callback_obj=None,
-            message_callback=lambda a,c: app.open_reply_window(a,c)
+            message_callback=lambda key, a, c: app.open_reply_window(key, a, c)
         )
         app = BluetoothGUI(manager)
-        # set callback_obj after init
         manager.callback_obj = app
         return app
     gui = create_app()
