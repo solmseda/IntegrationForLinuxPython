@@ -10,6 +10,10 @@ from plyer import notification
 from Clipboard_Data import ClipboardData
 
 class BluetoothConnectionManager:
+    # Package names for filtering notifications that can open a reply window
+    WHATSAPP_PACKAGE_NAME = "com.whatsapp"
+    TELEGRAM_PACKAGE_NAME = "org.telegram.messenger"
+
     def __init__(self, uuid, status_callback=None, notification_callback=None):
         self.bluetooth_adapter = None
         self.bluetooth_socket = None
@@ -21,6 +25,7 @@ class BluetoothConnectionManager:
         self.status_callback = status_callback  # Callback para atualizar o status na GUI
         self.notification_callback = notification_callback # Callback para GUI para notificações com chave
         self.received_ids = set() # Para evitar notificações duplicadas baseadas em notificationId
+        self.is_connected = False # Flag para rastrear o estado da conexão ativa
 
     def update_status(self, message):
         """Chama o callback para atualizar o status na GUI, se disponível."""
@@ -69,7 +74,8 @@ class BluetoothConnectionManager:
             # Initialize streams after successful connection
             self.input_stream = self.bluetooth_socket.makefile('rb')
             self.output_stream = self.bluetooth_socket.makefile('wb')
-            print(f"Conectado ao dispositivo {device_address}")
+            self.is_connected = True # Set connection flag
+            print(f"Conectado ao dispositivo {device_address}. is_connected = {self.is_connected}")
             self.update_status(f"Conectado ao dispositivo {device_address} com sucesso.")
             
             # Inicia o listener para receber dados
@@ -80,6 +86,7 @@ class BluetoothConnectionManager:
         except bluetooth.BluetoothError as e:
             print(f"Erro ao conectar: {e}")
             self.update_status("Erro ao conectar.")
+            self.is_connected = False # Ensure flag is false on connection error
             return False
 
     def receive_notification(self, notification_data):
@@ -135,9 +142,16 @@ class BluetoothConnectionManager:
                 self.output_stream.close()
             if self.bluetooth_socket:
                 self.bluetooth_socket.close()
-            print("Conexão Bluetooth encerrada.")
+            # Reset streams and socket to None after closing
+            self.input_stream = None
+            self.output_stream = None
+            self.bluetooth_socket = None
+            self.is_connected = False # Clear connection flag
+            print(f"Conexão Bluetooth encerrada. is_connected = {self.is_connected}")
+            self.update_status("Desconectado.") # Inform GUI
         except Exception as e:
             print(f"Erro ao fechar conexão: {e}")
+            self.is_connected = False # Ensure flag is false even if close had errors
 
     def scan_devices(self):
         print("Iniciando o scan de dispositivos Bluetooth...")
@@ -192,24 +206,48 @@ class BluetoothConnectionManager:
 
     def auto_connect_to_paired_devices(self):
         def connect_loop():
-            while True:
+            while True: # This outer loop ensures it keeps trying even after a disconnect
+                if self.is_connected:
+                    #print("Auto-connect: Already connected, sleeping.")
+                    time.sleep(5) # Check connection status every 5 seconds
+                    continue # Go back to check self.is_connected
+
+                # Only attempt to find and connect if not already connected
+                self.update_status("Procurando dispositivos pareados para conexão automática...")
                 paired_devices = self.list_paired_devices()
+                connected_this_cycle = False
 
-                for address, name in paired_devices:
-                    self.update_status(f"Verificando serviço no dispositivo: {name} ({address})")
-                    
-                    service_matches = bluetooth.find_service(uuid=str(self.uuid), address=address)
+                if not paired_devices:
+                    self.update_status("Nenhum dispositivo pareado encontrado. Tentando novamente em 10s...")
+                else:
+                    for address, name in paired_devices:
+                        if self.is_connected: # Check again in case connection happened while iterating
+                            connected_this_cycle = True
+                            break
 
-                    if service_matches:
-                        self.update_status(f"Dispositivo compatível encontrado: {name} ({address})")
-                        if self.start_client(address):
-                            self.update_status(f"Conectado automaticamente ao dispositivo: {name} ({address})")
-                            return  # Parar após conectar
-                    else:
-                        print(f"{name} não possui o serviço com UUID esperado.")
+                        self.update_status(f"Verificando serviço em: {name} ({address})")
+                        service_matches = bluetooth.find_service(uuid=str(self.uuid), address=address)
 
-                self.update_status("Nenhum dispositivo com serviço compatível encontrado. Tentando novamente em 10s...")
-                time.sleep(10)
+                        if service_matches:
+                            self.update_status(f"Dispositivo compatível: {name}. Tentando conectar...")
+                            if self.start_client(address): # start_client now sets self.is_connected
+                                self.update_status(f"Conectado automaticamente a: {name}")
+                                connected_this_cycle = True
+                                break # Exit inner loop (devices) once connected
+                            else:
+                                self.update_status(f"Falha ao conectar com {name}.")
+                        else:
+                            print(f"{name} ({address}) não possui o serviço com UUID esperado.")
+
+                if self.is_connected or connected_this_cycle:
+                    # If connected, just loop back and sleep via the self.is_connected check at the top
+                    #print("Auto-connect: Connection established or re-confirmed, will monitor.")
+                    time.sleep(5) # Brief pause before re-checking is_connected state
+                    continue
+
+                # If no connection was made in this cycle
+                self.update_status("Nenhum dispositivo conectado. Nova tentativa em 10s...")
+                time.sleep(10) # Wait before retrying the entire scan/connect process
 
         threading.Thread(target=connect_loop, daemon=True).start()
 
@@ -218,16 +256,23 @@ class BluetoothConnectionManager:
         buffer = b""
         while True:
             try:
-                chunk = self.bluetooth_socket.recv(1024)
-            except Exception as e:
-                print(f"Erro no recv: {e}")
-                self.update_status("Erro na conexão.")
+                chunk = self.bluetooth_socket.recv(1024) # This might block, consider timeout if needed
+            except bluetooth.BluetoothError as e: # More specific exception
+                print(f"Erro no recv (BluetoothError): {e}")
+                self.update_status("Erro na conexão Bluetooth.")
+                self.close_connection() # Sets is_connected to False
+                return
+            except Exception as e: # Catch other potential errors
+                print(f"Erro inesperado no recv: {e}")
+                self.update_status("Erro inesperado na conexão.")
+                self.close_connection() # Sets is_connected to False
                 return
 
             if not chunk:
                 # conexão foi fechada pelo outro lado
                 print("Conexão fechada pelo dispositivo Android.")
                 self.update_status("Dispositivo desconectado.")
+                self.close_connection() # Sets is_connected to False
                 return
 
             # Acumula o pedaço recebido no buffer
@@ -285,13 +330,17 @@ class BluetoothConnectionManager:
                 threading.Timer(5.0, lambda p=plyer_icon_path: os.remove(p) if os.path.exists(p) else None).start()
 
             # If a key is present and a callback is registered, invoke the callback
-            # This is for triggering the separate reply window.
-            if key and self.notification_callback:
-                print(f"Invoking notification_callback for key: {key}")
+            # only for specific apps (WhatsApp, Telegram).
+            if key and self.notification_callback and \
+               (app_name == self.WHATSAPP_PACKAGE_NAME or app_name == self.TELEGRAM_PACKAGE_NAME):
+                print(f"App '{app_name}' is eligible for reply window. Invoking notification_callback for key: {key}")
                 # Pass icon_b64 directly to callback; it can decide to decode/save if needed for Toplevel
                 self.notification_callback(app_name, content, icon_b64, key)
-            elif key:
-                print(f"Notification with key '{key}' received, but no GUI callback registered for reply window.")
+            elif key and self.notification_callback:
+                print(f"Notification from app '{app_name}' with key '{key}' received, but app is not WhatsApp/Telegram. No reply window.")
+            elif key: # Key present, but no callback registered at all
+                print(f"Notification with key '{key}' received, but no GUI callback registered for reply window (app: '{app_name}').")
+
 
             # Limpa buffer para próxima mensagem JSON
             buffer = b""
