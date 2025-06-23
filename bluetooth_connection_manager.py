@@ -10,15 +10,17 @@ from plyer import notification
 from Clipboard_Data import ClipboardData
 
 class BluetoothConnectionManager:
-    def __init__(self, uuid, status_callback=None):
+    def __init__(self, uuid, status_callback=None, notification_callback=None):
         self.bluetooth_adapter = None
         self.bluetooth_socket = None
-        self.input_stream = None
-        self.output_stream = None
+        self.input_stream = None # Should be set in start_client after socket connection
+        self.output_stream = None # Should be set in start_client after socket connection
         self.uuid = str(uuid)
         self.device = None
         self.devices = []
         self.status_callback = status_callback  # Callback para atualizar o status na GUI
+        self.notification_callback = notification_callback # Callback para notificar a GUI
+        self.received_ids = set() # To prevent duplicate notifications if Android sends an ID
 
     def update_status(self, message):
         """Chama o callback para atualizar o status na GUI, se disponível."""
@@ -247,43 +249,59 @@ class BluetoothConnectionManager:
                 self.received_ids.add(notif_id)
 
             # Extrai campos
-            app = mensagem_json.get("appName", "Aplicativo Android")
+            app_name = mensagem_json.get("appName", "Aplicativo Android")
             content = mensagem_json.get("content", "")
             icon_b64 = mensagem_json.get("iconBase64")
+            key = mensagem_json.get("key") # <<< Extract the key
 
-            # Se houver iconBase64, grava num arquivo temporário
-            icon_path = None
-            if icon_b64:
-                try:
-                    png_bytes = base64.b64decode(icon_b64)
-                    fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="android_icon_")
-                    os.write(fd, png_bytes)
-                    os.close(fd)
-                    icon_path = tmp_path
-                except Exception as e:
-                    print(f"Falha ao decodificar ícone: {e}")
-                    icon_path = None
+            if key: # We must have a key to make it useful for replies
+                print(f"Notification received: App: {app_name}, Content: {content}, Key: {key}")
 
-            # ### AQUI ESTÁ A MUDANÇA ESSENCIAL ###
-            # Se icon_path for None, usamos string vazia em vez de None
-            icon_para_notify = icon_path or ""
+                icon_path = None
+                if icon_b64:
+                    try:
+                        png_bytes = base64.b64decode(icon_b64)
+                        # It's better to let the GUI manager handle temp file creation if needed
+                        # For now, we'll just pass the base64 string or handle it in the callback
+                        icon_path = icon_b64 # Or pass png_bytes directly, or save and pass path
+                    except Exception as e:
+                        print(f"Falha ao decodificar ícone: {e}")
+                        # icon_path remains None
 
-            # Exibe a notificação no Linux (plyer)
-            notification.notify(
-                title=f"Notificação de {app}",
-                message=content,
-                app_name="Integration4Linux",
-                timeout=10,
-                app_icon=icon_para_notify
-            )
+                if self.notification_callback:
+                    self.notification_callback(app_name, content, icon_path, key)
+                else:
+                    # Fallback to old behavior if no callback is registered
+                    # (though GUI should always register it)
+                    display_icon_path = None
+                    if icon_b64: # Re-decode if not passed to a callback that handles it
+                        try:
+                            png_bytes = base64.b64decode(icon_b64)
+                            fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="android_icon_")
+                            os.write(fd, png_bytes)
+                            os.close(fd)
+                            display_icon_path = tmp_path
+                        except Exception as e:
+                            print(f"Falha ao decodificar ícone para fallback: {e}")
 
-            # Remove arquivo temporário após 1s (se foi criado)
-            if icon_path:
-                time.sleep(1)
-                try:
-                    os.remove(icon_path)
-                except OSError:
-                    pass
+                    notification.notify(
+                        title=f"Notificação de {app_name}",
+                        message=content,
+                        app_name="Integration4Linux",
+                        timeout=10,
+                        app_icon=display_icon_path or ""
+                    )
+                    if display_icon_path:
+                        time.sleep(1) # Keep the sleep if using temp file for plyer
+                        try:
+                            os.remove(display_icon_path)
+                        except OSError:
+                            pass
+            else:
+                print(f"Notification received without key. App: {app_name}, Content: {content}")
+                # Optionally, still display notifications that don't have a key,
+                # but they won't be replyable. For now, only process if key exists for reply feature.
+
 
             # Limpa buffer para próxima mensagem JSON
             buffer = b""
