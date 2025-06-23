@@ -135,12 +135,15 @@ class BluetoothConnectionManager:
 
             buffer += chunk
 
+            # tenta parsear JSON completo
             try:
                 texto = buffer.decode('utf-8')
                 data = json.loads(texto)
             except json.JSONDecodeError:
+                # JSON ainda incompleto; continua acumulando
                 continue
 
+            # obtém a key do payload
             key = data.get('key')
             if key and key in self.received_ids:
                 buffer = b""
@@ -148,12 +151,14 @@ class BluetoothConnectionManager:
             if key:
                 self.received_ids.add(key)
 
+            # extrai campos
             app = data.get('appName', '')
             content = data.get('content', '')
             icon_b64 = data.get('iconBase64')
 
             print(f"[MESSAGE] Recebida de {app}: {content}")
 
+            # salva o ícone, se existir
             icon_path = None
             if icon_b64:
                 try:
@@ -165,8 +170,8 @@ class BluetoothConnectionManager:
                     print(f"[ACTION] Ícone salvo em {icon_path}")
                 except Exception as e:
                     print(f"[ERROR] Falha ao decodificar ícone: {e}")
-                    icon_path = None
 
+            # exibe notificação no desktop
             notification.notify(
                 title=f"Notificação de {app}",
                 message=content,
@@ -176,12 +181,21 @@ class BluetoothConnectionManager:
             )
             print("[NOTIFY] Notificação exibida")
 
+            # dispara callback de resposta se for app de mensagens
             if self.message_callback and app.lower() in ('whatsapp', 'telegram'):
                 print(f"[CALLBACK] Abrindo janela de resposta para {app}")
-                self.callback_obj.after(0, lambda k=key, a=app, c=content: self.message_callback(k, a, c))
+                # abre o popup e, em seguida, libera a key para novas mensagens
+                def _do_callback(k=key, a=app, c=content):
+                    self.message_callback(k, a, c)
+                    # permite tratar futuras mensagens com a mesma key
+                    self.received_ids.discard(k)
 
+                self.callback_obj.after(0, _do_callback)
+
+            # limpa buffer para próxima mensagem
             buffer = b""
 
+            # remove ícone temporário
             if icon_path:
                 time.sleep(1)
                 try:
@@ -189,3 +203,4 @@ class BluetoothConnectionManager:
                     print(f"[CLEANUP] Ícone removido: {icon_path}")
                 except OSError as e:
                     print(f"[WARN] Falha ao remover ícone: {e}")
+
