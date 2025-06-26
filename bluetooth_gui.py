@@ -27,6 +27,7 @@ class BluetoothGUI(tk.Tk):
         self.manager.auto_connect_to_paired_devices()
 
     def start_scan(self):
+        self.manager.stop_auto_connect()
         self.lb.delete(0, tk.END)
         self.update_status("Escaneando...")
         devices = self.manager.scan_devices()

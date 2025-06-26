@@ -19,6 +19,7 @@ class BluetoothConnectionManager:
         self.message_callback = message_callback  # callback para abrir janela de resposta
         self.received_ids = set()                 # para evitar duplicatas via key
         self.last_messages = {}
+        self._auto_connect_enabled = True
 
     def update_status(self, message):
         print(f"[STATUS] {message}")
@@ -54,20 +55,75 @@ class BluetoothConnectionManager:
             print(f"[ERROR] Erro ao listar dispositivos pareados: {e}")
         return paired
 
-    def pair_device(self, address):
-        if any(addr == address for addr, _ in self.list_paired_devices()):
-            self.update_status(f"Já pareado: {address}")
-            return True
+    def pair_device(self, device_address):
         try:
-            self.update_status(f"Pareando com {address}...")
-            subprocess.run(["bluetoothctl", "pair", address], check=True)
-            subprocess.run(["bluetoothctl", "trust", address], check=True)
-            self.update_status(f"Pareamento concluído: {address}")
+            # 1) já pareado?
+            if any(addr == device_address for addr, _ in self.list_paired_devices()):
+                self.update_status(f"Dispositivo {device_address} já está pareado.")
+                return True
+
+            self.update_status(f"Iniciando pareamento com {device_address}...")
+            proc = subprocess.Popen(
+                ["bluetoothctl"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=0
+            )
+
+            # 2) prepara o adaptador e agente
+            proc.stdin.write("agent KeyboardDisplay\n")
+            proc.stdin.write("default-agent\n")
+            proc.stdin.write("pairable on\n")
+            proc.stdin.flush()
+
+            # 3) dispara o pair
+            proc.stdin.write(f"pair {device_address}\n")
+            proc.stdin.flush()
+
+            paired = False
+            start = time.time()
+            while time.time() - start < 30:
+                line = proc.stdout.readline().strip()
+                if not line:
+                    continue
+
+                print("[PAIRCTL]", line)
+
+                # Intercepta o prompt de confirmação (Android pedindo para confirmar o código)
+                if "Request confirmation" in line \
+                or "Confirm passkey" in line \
+                or "Confirm PIN" in line:
+                    # envia "yes" para o agente
+                    proc.stdin.write("yes\n")
+                    proc.stdin.flush()
+                    continue
+
+                # detecta sucesso
+                if "Pairing successful" in line or "Paired: yes" in line:
+                    paired = True
+                    break
+
+            if not paired:
+                self.update_status("Falha no pareamento (timeout).")
+                proc.stdin.write("quit\n"); proc.stdin.flush(); proc.terminate()
+                return False
+
+            # 6) confia no dispositivo e finaliza
+            proc.stdin.write(f"trust {device_address}\n")
+            proc.stdin.write("quit\n")
+            proc.stdin.flush()
+            proc.wait(timeout=5)
+
+            self.update_status(f"Pareamento com {device_address} realizado com sucesso.")
             return True
-        except subprocess.CalledProcessError as e:
-            print(f"[ERROR] Falha no pareamento: {e}")
-            self.update_status(f"Falha no pareamento: {e}")
+
+        except Exception as e:
+            print(f"[ERROR] Erro ao parear com {device_address}: {e}")
+            self.update_status(f"Erro ao parear com {device_address}.")
             return False
+
 
     def start_client(self, address):
         self.update_status(f"Iniciando cliente para {address}...")
@@ -105,7 +161,7 @@ class BluetoothConnectionManager:
     def auto_connect_to_paired_devices(self):
         def loop():
             print("[AUTO] Iniciando auto-connection loop")
-            while True:
+            while self._auto_connect_enabled:
                 for addr, name in self.list_paired_devices():
                     self.update_status(f"Verificando {name} ({addr})")
                     try:
@@ -114,10 +170,16 @@ class BluetoothConnectionManager:
                         matches = []
                     if matches and self.start_client(addr):
                         print(f"[AUTO] Conectado automaticamente a {addr}")
+                        # desliga o loop e sai
+                        self._auto_connect_enabled = False
                         return
                 self.update_status("Nenhum dispositivo compatível. Tentando novamente em 10s...")
                 time.sleep(10)
         threading.Thread(target=loop, daemon=True).start()
+
+    def stop_auto_connect(self):
+        """Desliga o loop de auto‐connect."""
+        self._auto_connect_enabled = False
 
     def listen_for_messages(self):
         print("[LISTEN] Thread de recepção iniciada")
