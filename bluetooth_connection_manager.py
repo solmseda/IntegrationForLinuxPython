@@ -6,7 +6,8 @@ import json
 import base64
 import tempfile
 import os
-import pyperclip 
+import pyperclip
+import re
 from plyer import notification
 
 class BluetoothConnectionManager:
@@ -14,12 +15,14 @@ class BluetoothConnectionManager:
         self.uuid = str(uuid)
         self.bluetooth_socket = None
         self.devices = []
-        self.status_callback = status_callback    # função para atualizar status na GUI
-        self.callback_obj = callback_obj          # objeto Tkinter, para usar after()
-        self.message_callback = message_callback  # callback para abrir janela de resposta
-        self.received_ids = set()                 # para evitar duplicatas via key
+        self.status_callback = status_callback
+        self.callback_obj = callback_obj
+        self.message_callback = message_callback
+        self.received_ids = set()
         self.last_messages = {}
         self._auto_connect_enabled = True
+        # regex para "X mensagens de Y conversas"
+        self._summary_re = re.compile(r"\d+\s+mensagens?\s+de\s+\d+\s+conversas?", re.IGNORECASE)
 
     def update_status(self, message):
         print(f"[STATUS] {message}")
@@ -34,7 +37,6 @@ class BluetoothConnectionManager:
             print(f"[ERROR] Erro no scan: {e}")
             self.update_status("Erro ao escanear dispositivos.")
             return []
-
         if self.devices:
             self.update_status(f"{len(self.devices)} dispositivo(s) encontrado(s).")
         else:
@@ -45,7 +47,7 @@ class BluetoothConnectionManager:
         print("[ACTION] Listando dispositivos pareados...")
         paired = []
         try:
-            output = subprocess.check_output(["bluetoothctl", "paired-devices"]).decode("utf-8")
+            output = subprocess.check_output(["bluetoothctl", "paired-devices"]).decode()
             for line in output.splitlines():
                 parts = line.split(" ", 2)
                 if len(parts) >= 3:
@@ -57,11 +59,9 @@ class BluetoothConnectionManager:
 
     def pair_device(self, device_address):
         try:
-            # 1) já pareado?
             if any(addr == device_address for addr, _ in self.list_paired_devices()):
                 self.update_status(f"Dispositivo {device_address} já está pareado.")
                 return True
-
             self.update_status(f"Iniciando pareamento com {device_address}...")
             proc = subprocess.Popen(
                 ["bluetoothctl"],
@@ -71,73 +71,54 @@ class BluetoothConnectionManager:
                 text=True,
                 bufsize=0
             )
-
-            # 2) prepara o adaptador e agente
             proc.stdin.write("agent KeyboardDisplay\n")
             proc.stdin.write("default-agent\n")
             proc.stdin.write("pairable on\n")
             proc.stdin.flush()
-
-            # 3) dispara o pair
             proc.stdin.write(f"pair {device_address}\n")
             proc.stdin.flush()
-
             paired = False
             start = time.time()
             while time.time() - start < 30:
                 line = proc.stdout.readline().strip()
                 if not line:
                     continue
-
                 print("[PAIRCTL]", line)
-
-                # Intercepta o prompt de confirmação (Android pedindo para confirmar o código)
-                if "Request confirmation" in line \
-                or "Confirm passkey" in line \
-                or "Confirm PIN" in line:
-                    # envia "yes" para o agente
+                if ("Request confirmation" in line
+                    or "Confirm passkey" in line
+                    or "Confirm PIN" in line):
                     proc.stdin.write("yes\n")
                     proc.stdin.flush()
                     continue
-
-                # detecta sucesso
                 if "Pairing successful" in line or "Paired: yes" in line:
                     paired = True
                     break
-
             if not paired:
                 self.update_status("Falha no pareamento (timeout).")
                 proc.stdin.write("quit\n"); proc.stdin.flush(); proc.terminate()
                 return False
-
-            # 6) confia no dispositivo e finaliza
             proc.stdin.write(f"trust {device_address}\n")
             proc.stdin.write("quit\n")
             proc.stdin.flush()
             proc.wait(timeout=5)
-
             self.update_status(f"Pareamento com {device_address} realizado com sucesso.")
             return True
-
         except Exception as e:
             print(f"[ERROR] Erro ao parear com {device_address}: {e}")
             self.update_status(f"Erro ao parear com {device_address}.")
             return False
-
 
     def start_client(self, address):
         self.update_status(f"Iniciando cliente para {address}...")
         if not any(addr == address for addr, _ in self.list_paired_devices()):
             if not self.pair_device(address):
                 return False
-
         print(f"[ACTION] Procurando serviço UUID={self.uuid} em {address}")
         try:
             matches = bluetooth.find_service(uuid=self.uuid, address=address)
         except Exception as e:
             print(f"[ERROR] Erro ao buscar serviço: {e}")
             matches = []
-
         if matches:
             host = matches[0]["host"]
             port = matches[0]["port"]
@@ -145,7 +126,6 @@ class BluetoothConnectionManager:
         else:
             host, port = address, 1
             print(f"[WARN] Nenhum serviço SDP; usando fallback {host}:{port}")
-
         try:
             self.bluetooth_socket = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
             self.bluetooth_socket.connect((host, port))
@@ -154,7 +134,6 @@ class BluetoothConnectionManager:
             print(f"[ERROR] Erro de conexão: {e}")
             self.update_status(f"Erro de conexão: {e}")
             return False
-
         threading.Thread(target=self.listen_for_messages, daemon=True).start()
         return True
 
@@ -170,7 +149,6 @@ class BluetoothConnectionManager:
                         matches = []
                     if matches and self.start_client(addr):
                         print(f"[AUTO] Conectado automaticamente a {addr}")
-                        # desliga o loop e sai
                         self._auto_connect_enabled = False
                         return
                 self.update_status("Nenhum dispositivo compatível. Tentando novamente em 10s...")
@@ -178,7 +156,6 @@ class BluetoothConnectionManager:
         threading.Thread(target=loop, daemon=True).start()
 
     def stop_auto_connect(self):
-        """Desliga o loop de auto‐connect."""
         self._auto_connect_enabled = False
 
     def listen_for_messages(self):
@@ -204,8 +181,7 @@ class BluetoothConnectionManager:
                 data = json.loads(buffer.decode('utf-8'))
                 print(f"[DEBUG DATA] {data!r}")
             except json.JSONDecodeError:
-                # JSON ainda incompleto — continua acumulando
-                continue
+                continue  # JSON incompleto
 
             # 1) Mensagem de clipboard
             if data.get('type') == 'clipboard':
@@ -222,17 +198,17 @@ class BluetoothConnectionManager:
                         )
                     except Exception as e:
                         print(f"[ERROR] Falha ao atualizar clipboard: {e}")
-                buffer = b""    # limpa tudo e volta a escutar
+                buffer = b""
                 continue
 
             # 2) Notificação de app
-            key     = data.get('key')
-            app     = data.get('appName', '')
-            sender  = data.get('sender', app)
-            content = data.get('content', '')
-            icon_b64= data.get('iconBase64')
+            key      = data.get('key')
+            app      = data.get('appName', '')
+            sender   = data.get('sender', app)
+            content  = data.get('content', '')
+            icon_b64 = data.get('iconBase64')
 
-            # filtra apenas conteúdo novo
+            # evita duplicatas
             last = self.last_messages.get(key)
             if key and last == content:
                 buffer = b""
@@ -255,7 +231,7 @@ class BluetoothConnectionManager:
                 except Exception as e:
                     print(f"[ERROR] Falha ao decodificar ícone: {e}")
 
-            # exibe notificação
+            # exibe notificação de desktop
             notification.notify(
                 title=f"Notificação de {app}",
                 message=content,
@@ -265,8 +241,19 @@ class BluetoothConnectionManager:
             )
             print("[NOTIFY] Notificação exibida")
 
-            # popup de resposta
-            if self.message_callback and ('telegram' in app.lower() or 'whatsapp' in app.lower()):
+            # 3) Popup de resposta só para chats reais
+            lower_app   = app.lower()
+            lower_cont  = content.lower()
+            is_chat_app = 'telegram' in lower_app or 'whatsapp' in lower_app
+            is_summary  = 'mensagens de' in lower_cont
+            is_scanning = lower_cont.startswith("procurando novas mensagens")
+            is_own      = sender.lower().startswith("você")
+
+            if (self.message_callback
+                and is_chat_app
+                and not is_summary
+                and not is_scanning
+                and not is_own):
                 print(f"[CALLBACK] Abrindo popup para conversa com {sender}")
                 def _cb(k=key, s=sender, c=content):
                     self.message_callback(k, s, c)
