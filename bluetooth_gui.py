@@ -10,6 +10,10 @@ class BluetoothGUI(tk.Tk):
         self.title("Integration4Linux")
         self.geometry("600x400")
         self.manager = manager
+
+        # Para rastrear janelas de resposta por 'key'
+        self.reply_windows = {}
+
         # Status
         self.status_label = tk.Label(self, text="Pronto", font=(None,12))
         self.status_label.pack(pady=5)
@@ -44,31 +48,45 @@ class BluetoothGUI(tk.Tk):
     def update_status(self, msg):
         self.status_label.config(text=msg)
 
-    def open_reply_window(self, key, app, content):
+    def open_reply_window(self, key, sender, content):
+        # se a janela já existe...
+        if key in self.reply_windows:
+            frame = self.reply_windows[key]['frame']
+            tk.Label(frame, text=f"{sender}: {content}", anchor='w', justify='left', wraplength=400).pack(fill='x', padx=5, pady=2)
+            return
+
+        # criação da janela...
         win = tk.Toplevel(self)
-        win.title(f"Responder a {app}")
-        tk.Label(win, text=f"{app}: {content}").pack(padx=10, pady=5)
+        win.title(f"Conversa: {sender}")  # título com o nome da pessoa
+
+        msg_frame = tk.Frame(win)
+        msg_frame.pack(fill='both', expand=True, padx=5, pady=5)
+
+        # primeira mensagem com sender
+        tk.Label(msg_frame, text=f"{sender}: {content}", anchor='w', justify='left', wraplength=400).pack(fill='x', padx=5, pady=2)
+
         entry = tk.Entry(win, width=50)
-        entry.pack(padx=10, pady=5)
+        entry.pack(padx=5, pady=5, side='left', expand=True)
+
         def send_reply():
             text = entry.get().strip()
-            if not text:
-                return
-            payload = {
-                'key': key,
-                'reply': text
-            }
+            if not text: return
+            payload = {'key': key, 'reply': text}
             data = json.dumps(payload) + "\n"
-
-            print(f"[Python] Enviando reply JSON para Android: {data!r}")
-
             try:
                 self.manager.bluetooth_socket.send(data.encode('utf-8'))
-                print("[Python] send() completou sem exceção")
-                win.destroy()
+                entry.delete(0, tk.END)
+                # exibe a mensagem do usuário
+                tk.Label(msg_frame, text=f"Você: {text}", anchor='e', justify='right', wraplength=400).pack(fill='x', padx=5, pady=2)
             except Exception as e:
                 print(f"[Python] Erro ao enviar reply: {e}")
-        tk.Button(win, text="Enviar", command=send_reply).pack(pady=5)
+
+        tk.Button(win, text="Enviar", command=send_reply).pack(padx=5, pady=5, side='right')
+
+        # registra janela
+        self.reply_windows[key] = {'window': win, 'frame': msg_frame}
+        win.protocol("WM_DELETE_WINDOW", lambda: (self.reply_windows.pop(key, None), win.destroy()))
+
 
 
 def run_gui():
@@ -80,7 +98,8 @@ def run_gui():
             uuid=srv,
             status_callback=lambda m: app.update_status(m),
             callback_obj=None,
-            message_callback=lambda key, a, c: app.open_reply_window(key, a, c)
+            # <-- aqui, renomeie os parâmetros para refletir sender e content:
+            message_callback=lambda key, sender, content: app.open_reply_window(key, sender, content)
         )
         app = BluetoothGUI(manager)
         manager.callback_obj = app
