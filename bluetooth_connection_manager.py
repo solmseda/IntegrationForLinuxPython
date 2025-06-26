@@ -6,6 +6,7 @@ import json
 import base64
 import tempfile
 import os
+import pyperclip 
 from plyer import notification
 
 class BluetoothConnectionManager:
@@ -144,14 +145,32 @@ class BluetoothConnectionManager:
                 # JSON ainda incompleto — continua acumulando
                 continue
 
-            # extrai campos
+            # 1) Mensagem de clipboard
+            if data.get('type') == 'clipboard':
+                text = data.get('content', '')
+                if text:
+                    try:
+                        pyperclip.copy(text)
+                        print(f"[CLIPBOARD] Copiado para o clipboard: {text!r}")
+                        notification.notify(
+                            title="Clipboard atualizado",
+                            message=text,
+                            app_name="Integration4Linux",
+                            timeout=5
+                        )
+                    except Exception as e:
+                        print(f"[ERROR] Falha ao atualizar clipboard: {e}")
+                buffer = b""    # limpa tudo e volta a escutar
+                continue
+
+            # 2) Notificação de app
             key     = data.get('key')
             app     = data.get('appName', '')
             sender  = data.get('sender', app)
             content = data.get('content', '')
             icon_b64= data.get('iconBase64')
 
-            # filtra apenas conteúdo novo para esta conversa
+            # filtra apenas conteúdo novo
             last = self.last_messages.get(key)
             if key and last == content:
                 buffer = b""
@@ -161,7 +180,7 @@ class BluetoothConnectionManager:
 
             print(f"[MESSAGE] {sender} ({app}): {content}")
 
-            # salva ícone temporário
+            # salva ícone
             icon_path = None
             if icon_b64:
                 try:
@@ -174,7 +193,7 @@ class BluetoothConnectionManager:
                 except Exception as e:
                     print(f"[ERROR] Falha ao decodificar ícone: {e}")
 
-            # notificação de sistema (mantém título com o nome do app)
+            # exibe notificação
             notification.notify(
                 title=f"Notificação de {app}",
                 message=content,
@@ -184,17 +203,16 @@ class BluetoothConnectionManager:
             )
             print("[NOTIFY] Notificação exibida")
 
-            # abre/atualiza popup de conversa
-            if self.message_callback and app.lower() in ('whatsapp', 'telegram'):
+            # popup de resposta
+            if self.message_callback and ('telegram' in app.lower() or 'whatsapp' in app.lower()):
                 print(f"[CALLBACK] Abrindo popup para conversa com {sender}")
                 def _cb(k=key, s=sender, c=content):
                     self.message_callback(k, s, c)
                 self.callback_obj.after(0, _cb)
 
-            # prepara buffer para a próxima mensagem
             buffer = b""
 
-            # remove arquivo de ícone temporário
+            # limpa ícone temporário
             if icon_path:
                 time.sleep(1)
                 try:
